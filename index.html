@@ -867,6 +867,7 @@
     let ctx2d = null;
     let imgData = null;
     let colorLut = new Uint8Array(256 * 3);
+    let lutKey = '';
 
     function cpuCtx() {
       if (!ctx2d) ctx2d = canvas.getContext('2d');
@@ -1623,7 +1624,7 @@ function renderCPU() {
         const octx = out.getContext('2d');
         const im = octx.createImageData(size, size);
         const d = im.data;
-        const key = params.palette + '|' + params.invert + '|' + params.colorBias;
+        const key = params.palette + '|' + params.invert + '|' + params.colorBias + '|' + params.vibrance;
         if (key !== lutKey) buildColorLut();
         for (let j = 3; j < d.length; j += 4) d[j] = 255;
         for (let i = 0, j = 0; i < size * size; i++, j += 4) {
