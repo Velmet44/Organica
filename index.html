@@ -28,8 +28,6 @@
       overflow: hidden;
     }
 
-    /* TODO: Stage 8 — responsive layout (panel below canvas under 768px) */
-
     #topbar {
       height: 44px;
       display: flex;
@@ -439,12 +437,26 @@
     /* Fullscreen mode: hide panel, canvas fills viewport */
     body.fullscreen #panel,
     body.fullscreen #topbar { display: none; }
+    /* Responsive: stack panel below the canvas on narrow screens */
+    @media (max-width: 768px) {
+      #main { flex-direction: column; height: auto; }
+      #canvas-area { padding: 8px; }
+      #sim {
+        width: min(100vw - 20px, calc(100vh - 76px));
+        height: min(100vw - 20px, calc(100vh - 76px));
+      }
+      #panel {
+        width: auto;
+        border-left: none;
+        border-top: 1px solid var(--border);
+      }
+    }
+
     body.fullscreen #main { grid-template-columns: 1fr; }
     body.fullscreen #canvas-area { border-radius: 0; }
   </style>
 </head>
 <body>
-  <!-- TODO: Stage 8 — About [?] tooltip, fullscreen button -->
   <header id="topbar">
     <h1>🧬 Reaction-Diffusion Engine</h1>
     <div id="topbar-actions">
@@ -481,7 +493,7 @@
         <div class="param-row">
           <div class="param-head"><label for="ctl-palette">Colour Palette</label></div>
           <select id="ctl-palette">
-            <!-- TODO: Stage 5 — enable the remaining palettes -->
+            <!-- 10 palettes registered in the PALETTES table below -->
             <option value="grayscale">Grayscale</option>
             <option value="viridis">Viridis</option>
             <option value="plasma">Plasma</option>
@@ -550,7 +562,6 @@
         <button class="btn" id="btn-json">Copy Parameters JSON</button>
       </section>
 
-      <!-- TODO: Stage 8 — shortcuts legend footer -->
       <!-- Shortcuts legend (spec §8) -->
       <footer class="shortcuts" id="shortcuts-legend">
         <h2>Shortcuts</h2>
