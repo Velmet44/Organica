@@ -1,2 +1,5 @@
 # Local scratch/test area (owner's private testing)
 IGNORETHISFOLDER/
+
+# Playwright CLI session artifacts
+.playwright-cli/

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="Organica — a browser-based Gray-Scott reaction-diffusion pattern engine. Tune parameters in real time and export print-quality PNGs.">
   <title>Organica — Reaction-Diffusion Engine</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%236e8efb'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
@@ -262,6 +263,24 @@
       color: #0a0a0f;
     }
 
+    /* CPU-fallback notice */
+    #mode-banner {
+      position: absolute;
+      top: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(110, 142, 251, 0.12);
+      border: 1px solid var(--accent);
+      color: var(--text);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      display: none;
+      pointer-events: none;
+    }
+    #mode-banner.visible { display: block; }
+
     /* TODO: Stage 7 — export buttons + progress modal */
     /* TODO: Stage 8 — keyboard shortcut legend, fullscreen button, About tooltip */
   </style>
@@ -278,6 +297,7 @@
       <canvas id="sim"></canvas>
       <div class="overlay" id="frameCounter">Frame: 0</div>
       <div class="overlay" id="fpsCounter">FPS: --</div>
+      <div id="mode-banner">WebGL not available — running in CPU mode (may be slower)</div>
     </div>
 
     <aside id="panel">
@@ -363,9 +383,10 @@
          1. PRNG        — mulberry32 + string hashing (deterministic seeds)
          2. Parameters  — live parameter object read by the sim
          3. Simulation  — initGrid() / tick(): double-buffered CPU core
-         4. Renderer    — Canvas2D blit via 256-entry palette LUT (linear RGB)
-         5. UI          — control panel wiring (sliders, selects, seed)
-         6. Main loop   — requestAnimationFrame, N ticks per frame
+         4. Renderer    — palette LUT (linear RGB) for both render paths
+         5. UI          — control panel wiring (sliders, presets, seed)
+         6. GPU         — WebGL1 ping-pong FBO renderer, CPU fallback guard
+         7. Main loop   — requestAnimationFrame; GPU or CPU per capability
        ============================================================ */
 
     /* ---------- 1. PRNG ---------- */
@@ -609,10 +630,17 @@
       V = _Vn; V_next = _V;
     }
 
-    /* ---------- 4. Renderer (CPU Canvas2D, palette LUT) ---------- */
-    const canvas = document.getElementById('sim');
-    const ctx = canvas.getContext('2d');
+    /* ---------- 4. Renderer (CPU Canvas2D path, palette LUT) ---------- */
+    // NOTE: canvas is `let` — if WebGL initialises successfully it is swapped
+    // for a GPU-backed canvas (a canvas can hold only one context type).
+    let canvas = document.getElementById('sim');
+    let ctx2d = null;
     let imgData = null;
+
+    function cpuCtx() {
+      if (!ctx2d) ctx2d = canvas.getContext('2d');
+      return ctx2d;
+    }
 
     // Palette stops as [t, r, g, b] with sRGB 0-255 channels.
     // viridis stops are exact (spec §7); others match their described character.
@@ -729,6 +757,8 @@
     function renderCPU() {
       const key = params.palette + '|' + params.invert + '|' + params.colorBias;
       if (key !== lutKey) buildColorLut();
+      const ctx = cpuCtx();
+      if (!ctx) return;
       if (!imgData || imgData.width !== W || imgData.height !== H) {
         canvas.width = W;
         canvas.height = H;
@@ -869,6 +899,10 @@
 
     function reseed() {
       initGrid(params.gridSize, params.gridSize, params.seed, params.seedMode);
+      if (gpu.active) {
+        gpuEnsureSize();
+        uploadState();
+      }
     }
 
     $('ctl-seedmode').addEventListener('change', () => {
@@ -895,7 +929,336 @@
 
     $('btn-reset').addEventListener('click', reseed);
 
-    /* ---------- 6. Main loop ---------- */
+    /* ---------- 6. GPU renderer (WebGL1, ping-pong FBOs) ---------- */
+    // Strategy: the whole pipeline is built on a detached canvas first. Only
+    // when EVERY step succeeds (context, OES_texture_float, highp fragment
+    // precision, shaders, float render targets) is that canvas swapped into
+    // the DOM as #sim — a canvas can hold only one context type, so the CPU
+    // path stays untouched if any probe fails.
+    // Toroidal boundaries: WebGL1 forbids REPEAT on NPOT textures (grid 768),
+    // so neighbour lookups wrap via fract() in the shader — same boundary
+    // condition, valid for every grid size.
+    const gpu = {
+      active: false,
+      gl: null,
+      progSim: null, progDisp: null,
+      uniSim: {}, uniDisp: {},
+      tex: [null, null],
+      fbo: [null, null],
+      read: 0,
+      lutTex: null,
+      lutKeyGPU: '',
+      size: 0,
+      canReadback: false
+    };
+
+    const VERT_SRC = `
+      attribute vec2 aPos;
+      varying vec2 v_texCoord;
+      void main() {
+        v_texCoord = aPos * 0.5 + 0.5;
+        gl_Position = vec4(aPos, 0.0, 1.0);
+      }`;
+
+    const SIM_FRAG_SRC = `
+      precision highp float;
+      uniform sampler2D uState;
+      uniform float uF, uK, uDu, uDv, uDt;
+      uniform vec2 uTexel;
+      varying vec2 v_texCoord;
+
+      vec2 s(vec2 off) {
+        return texture2D(uState, fract(v_texCoord + off)).rg;
+      }
+
+      void main() {
+        vec2 c = texture2D(uState, v_texCoord).rg;
+        float U = c.r, V = c.g;
+
+        vec2 lap = vec2(0.0);
+        lap += 0.20 * (s(vec2( uTexel.x, 0.0)) + s(vec2(-uTexel.x, 0.0)) +
+                       s(vec2(0.0,  uTexel.y)) + s(vec2(0.0, -uTexel.y)));
+        lap += 0.05 * (s(vec2( uTexel.x,  uTexel.y)) + s(vec2(-uTexel.x,  uTexel.y)) +
+                       s(vec2( uTexel.x, -uTexel.y)) + s(vec2(-uTexel.x, -uTexel.y)));
+        lap -= c;
+
+        float reaction = U * V * V;
+        float dU = uDu * lap.r - reaction + uF * (1.0 - U);
+        float dV = uDv * lap.g + reaction - (uF + uK) * V;
+
+        gl_FragColor = vec4(clamp(U + uDt * dU, 0.0, 1.0),
+                            clamp(V + uDt * dV, 0.0, 1.0), 0.0, 1.0);
+      }`;
+
+    const DISP_FRAG_SRC = `
+      precision highp float;
+      uniform sampler2D uState;
+      uniform sampler2D uLut;
+      varying vec2 v_texCoord;
+      void main() {
+        float V = texture2D(uState, v_texCoord).g;
+        gl_FragColor = vec4(texture2D(uLut, vec2(V * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb, 1.0);
+      }`;
+
+    function setCpuMode() {
+      if (!gpu.active) return;
+      gpu.active = false;
+      document.getElementById('mode-banner').classList.add('visible');
+    }
+
+    function glShader(gl, type, src) {
+      const sh = gl.createShader(type);
+      gl.shaderSource(sh, src);
+      gl.compileShader(sh);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+        console.warn('Organica shader error:', gl.getShaderInfoLog(sh));
+        gl.deleteShader(sh);
+        return null;
+      }
+      return sh;
+    }
+
+    function glProgram(gl, fragSrc) {
+      const vs = glShader(gl, gl.VERTEX_SHADER, VERT_SRC);
+      const fs = glShader(gl, gl.FRAGMENT_SHADER, fragSrc);
+      if (!vs || !fs) return null;
+      const prog = gl.createProgram();
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.bindAttribLocation(prog, 0, 'aPos'); // shared quad layout
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        console.warn('Organica link error:', gl.getProgramInfoLog(prog));
+        return null;
+      }
+      return prog;
+    }
+
+    function gpuCreateTargets(gl, w, h) {
+      const texOpts = (tex) => {
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.FLOAT, null);
+      };
+      for (let i = 0; i < 2; i++) {
+        gpu.tex[i] = gl.createTexture();
+        texOpts(gpu.tex[i]);
+        gpu.fbo[i] = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, gpu.fbo[i]);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
+                                gl.TEXTURE_2D, gpu.tex[i], 0);
+        if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+          return false; // float render targets unsupported
+        }
+      }
+      gpu.read = 0;
+      gpu.size = w;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      return true;
+    }
+
+    function gpuDestroyTargets() {
+      const gl = gpu.gl;
+      if (!gl) return;
+      for (let i = 0; i < 2; i++) {
+        if (gpu.tex[i]) gl.deleteTexture(gpu.tex[i]);
+        if (gpu.fbo[i]) gl.deleteFramebuffer(gpu.fbo[i]);
+        gpu.tex[i] = null;
+        gpu.fbo[i] = null;
+      }
+      gpu.size = 0;
+    }
+
+    function tryInitGPU() {
+      let gl = null;
+      const holder = document.createElement('canvas'); // detached probe canvas
+      try {
+        gl = holder.getContext('webgl', { preserveDrawingBuffer: true }) ||
+             holder.getContext('experimental-webgl', { preserveDrawingBuffer: true });
+        if (!gl) throw new Error('no webgl context');
+        if (!gl.getExtension('OES_texture_float')) throw new Error('no OES_texture_float');
+
+        // highp fragment precision is optional in WebGL1 and required here
+        const hp = gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.HIGH_FLOAT);
+        if (!hp || hp.precision === 0) throw new Error('no highp fragment precision');
+
+        // WEBGL_color_buffer_float only gates guaranteed float READBACK
+        gpu.canReadback = !!gl.getExtension('WEBGL_color_buffer_float');
+
+        const progSim = glProgram(gl, SIM_FRAG_SRC);
+        const progDisp = glProgram(gl, DISP_FRAG_SRC);
+        if (!progSim || !progDisp) throw new Error('shader compile/link failed');
+        if (!gpuCreateTargets(gl, params.gridSize, params.gridSize)) {
+          throw new Error('float render targets incomplete');
+        }
+
+        // fullscreen quad (attribute 0, shared layout for both programs)
+        const buf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+        gl.bufferData(gl.ARRAY_BUFFER,
+          new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(0);
+        gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+        // LUT texture (256x1 RGBA bytes)
+        const lutTex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, lutTex);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+        gpu.gl = gl;
+        gpu.progSim = progSim;
+        gpu.progDisp = progDisp;
+        gpu.lutTex = lutTex;
+        gpu.uniSim = {
+          state: gl.getUniformLocation(progSim, 'uState'),
+          f: gl.getUniformLocation(progSim, 'uF'),
+          k: gl.getUniformLocation(progSim, 'uK'),
+          du: gl.getUniformLocation(progSim, 'uDu'),
+          dv: gl.getUniformLocation(progSim, 'uDv'),
+          dt: gl.getUniformLocation(progSim, 'uDt'),
+          texel: gl.getUniformLocation(progSim, 'uTexel')
+        };
+        gpu.uniDisp = {
+          state: gl.getUniformLocation(progDisp, 'uState'),
+          lut: gl.getUniformLocation(progDisp, 'uLut')
+        };
+
+        // adopt the working context: swap the GPU-backed canvas in as #sim
+        holder.id = 'sim';
+        holder.width = params.gridSize;
+        holder.height = params.gridSize;
+        canvas.parentNode.replaceChild(holder, canvas);
+        canvas = holder;
+        ctx2d = null;
+        imgData = null;
+        gpu.active = true;
+
+        canvas.addEventListener('webglcontextlost', (e) => {
+          e.preventDefault();
+          gpuDestroyTargets();
+          setCpuMode();
+        }, false);
+
+        uploadState();
+      } catch (err) {
+        gpu.active = false;
+        document.getElementById('mode-banner').classList.add('visible');
+      }
+    }
+
+    function packState() {
+      const n = W * H;
+      const out = new Float32Array(n * 4);
+      for (let i = 0, j = 0; i < n; i++, j += 4) {
+        out[j] = U[i];
+        out[j + 1] = V[i];
+        out[j + 3] = 1.0;
+      }
+      return out;
+    }
+
+    function uploadState() {
+      const gl = gpu.gl;
+      if (!gl || !gpu.size) return;
+      gl.bindTexture(gl.TEXTURE_2D, gpu.tex[gpu.read]);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.FLOAT, packState());
+    }
+
+    function gpuEnsureSize() {
+      if (!gpu.active || gpu.size === W) return;
+      gpuDestroyTargets();
+      if (!gpuCreateTargets(gpu.gl, W, H)) { setCpuMode(); return; }
+      canvas.width = W;
+      canvas.height = H;
+      uploadState();
+    }
+
+    function gpuUploadLut() {
+      const gl = gpu.gl;
+      const rgba = new Uint8Array(256 * 4);
+      for (let i = 0; i < 256; i++) {
+        rgba[i * 4]     = colorLut[i * 3];
+        rgba[i * 4 + 1] = colorLut[i * 3 + 1];
+        rgba[i * 4 + 2] = colorLut[i * 3 + 2];
+        rgba[i * 4 + 3] = 255;
+      }
+      gl.bindTexture(gl.TEXTURE_2D, gpu.lutTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+      gpu.lutKeyGPU = lutKey;
+    }
+
+    function gpuStep(steps) {
+      const gl = gpu.gl;
+      if (!gl || !gpu.size) return;
+      gl.useProgram(gpu.progSim);
+      gl.viewport(0, 0, W, H);
+      gl.uniform1i(gpu.uniSim.state, 0);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.uniform1f(gpu.uniSim.f, params.f);
+      gl.uniform1f(gpu.uniSim.k, params.k);
+      gl.uniform1f(gpu.uniSim.du, params.Du);
+      gl.uniform1f(gpu.uniSim.dv, params.Dv);
+      gl.uniform1f(gpu.uniSim.dt, 1.0); // spec: fixed timestep
+      gl.uniform2f(gpu.uniSim.texel, 1 / W, 1 / H);
+
+      for (let i = 0; i < steps; i++) {
+        const write = 1 - gpu.read;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, gpu.fbo[write]);
+        gl.bindTexture(gl.TEXTURE_2D, gpu.tex[gpu.read]);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        gpu.read = write;
+      }
+    }
+
+    function gpuDisplay() {
+      const gl = gpu.gl;
+      // compare against live params (module lutKey may be stale in GPU mode,
+      // where the CPU blit never runs)
+      const key = params.palette + '|' + params.invert + '|' + params.colorBias;
+      if (key !== gpu.lutKeyGPU) {
+        buildColorLut();
+        gpuUploadLut();
+      }
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, W, H);
+      gl.useProgram(gpu.progDisp);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, gpu.tex[gpu.read]);
+      gl.uniform1i(gpu.uniDisp.state, 0);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, gpu.lutTex);
+      gl.uniform1i(gpu.uniDisp.lut, 1);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+
+    // Reads current GPU state back into the CPU arrays (U/V).
+    // Rows arrive bottom-up from GL and are flipped during extraction.
+    // Returns false when readback is unsupported (export then re-runs on CPU).
+    function syncFromGPU() {
+      if (!gpu.active || !gpu.canReadback) return false;
+      const gl = gpu.gl;
+      const buf = new Float32Array(W * H * 4);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, gpu.fbo[gpu.read]);
+      gl.readPixels(0, 0, W, H, gl.RGBA, gl.FLOAT, buf);
+      if (gl.getError() !== gl.NO_ERROR) return false;
+      for (let y = 0; y < H; y++) {
+        const srcRow = (H - 1 - y) * W * 4;
+        const dstRow = y * W;
+        for (let x = 0; x < W; x++) {
+          U[dstRow + x] = buf[srcRow + x * 4];
+          V[dstRow + x] = buf[srcRow + x * 4 + 1];
+        }
+      }
+      return true;
+    }
+
+    /* ---------- 7. Main loop ---------- */
     const frameEl = $('frameCounter');
     const fpsEl = $('fpsCounter');
     let fpsFrames = 0;
@@ -909,9 +1272,16 @@
     }, 1000);
 
     function frame() {
-      for (let s = 0; s < params.stepsPerFrame; s++) tick(params);
+      if (gpu.active) {
+        gpuEnsureSize();
+        gpuStep(params.stepsPerFrame);
+        gpuDisplay();
+      } else {
+        for (let s = 0; s < params.stepsPerFrame; s++) tick(params);
+        renderCPU();
+      }
       frameCount++;
-      renderCPU();
+      fpsFrames++;
       frameEl.textContent = 'Frame: ' + frameCount;
       requestAnimationFrame(frame);
     }
@@ -919,6 +1289,7 @@
     params.seed = randomSeedString();
     $('ctl-seed').value = params.seed;
     initGrid(params.gridSize, params.gridSize, params.seed, params.seedMode);
+    tryInitGPU();
     requestAnimationFrame(frame);
   </script>
 </body>
