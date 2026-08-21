@@ -370,13 +370,31 @@
       color: #e0e0f0;
     }
 
-    /* Transport buttons (Pause / Step) */
+    /* Transport buttons (Start / Step) */
     .transport-row {
       display: flex;
       gap: 8px;
-      margin-bottom: 12px;
+      margin-bottom: 10px;
     }
     .transport-row .btn { flex: 0 0 auto; }
+
+    /* Simulation status indicator */
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      margin-bottom: 12px;
+    }
+    .status-row label { color: #8888a0; }
+    .sim-status {
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 500;
+    }
+    .sim-idle   { color: #8888a0; }
+    .sim-running{ color: #5ee08a; }
+    .sim-paused { color: #e0b050; }
+    .sim-done   { color: var(--accent); }
 
     /* Topbar icon buttons */
     .btn-icon {
@@ -482,8 +500,11 @@
       <section class="panel-section" id="sec-sim">
         <h2>Simulation</h2>
         <div class="transport-row">
-          <button class="btn" id="btn-play">⏸ Pause</button>
-          <button class="btn" id="btn-step" title="Advance exactly one iteration while paused">▶ Step</button>
+          <button class="btn" id="btn-play">▶ Start</button>
+          <button class="btn" id="btn-step" title="Advance exactly one iteration">▶ Step</button>
+        </div>
+        <div class="status-row">
+          <label>Status</label><span id="sim-status" class="sim-status sim-idle">Idle</span>
         </div>
         <!-- slider rows injected by JS -->
       </section>
@@ -548,6 +569,10 @@
 
       <section class="panel-section" id="sec-export">
         <h2>Export</h2>
+        <div class="param-row">
+          <div class="param-head"><label for="ctl-exname">Filename</label></div>
+          <input type="text" id="ctl-exname" spellcheck="false" autocomplete="off" placeholder="organica_<seed>_f<f>_k<k>">
+        </div>
         <button class="btn" id="btn-export" style="margin-bottom:8px">📷 Export PNG</button>
         <div class="param-row">
           <div class="param-head"><label for="ctl-exsize">Export Size</label></div>
@@ -1189,6 +1214,9 @@ function renderCPU() {
 
     function reseed() {
       stableCount = 0; // reset convergence tracker on new seed
+      gpuLastV = null; // invalidate previous GPU snapshot
+      running = false;
+      setSimState('idle'); // wait for the user to press Start again
       initGrid(params.gridSize, params.gridSize, params.seed, params.seedMode);
       if (gpu.active) {
         gpuEnsureSize();
@@ -1546,16 +1574,46 @@ function renderCPU() {
           V[dstRow + x] = buf[srcRow + x * 4 + 1];
         }
       }
-      return true;
-    }
+       return true;
+     }
 
-    /* ---------- 7. Export ---------- */
+     // Reads current GPU V channel (if float readback is supported) and returns
+     // the sum of absolute per-cell differences vs the previous snapshot. Used
+     // for stability / auto-stop detection in GPU mode.
+     function gpuStabilityDiff() {
+       if (!gpu.active || !gpu.canReadback) return 0;
+       const gl = gpu.gl;
+       const n = W * H;
+       if (!gpu._diffBuf || gpu._diffBuf.length !== n * 4)
+         gpu._diffBuf = new Float32Array(n * 4);
+       const buf = gpu._diffBuf;
+       gl.bindFramebuffer(gl.FRAMEBUFFER, gpu.fbo[gpu.read]);
+       gl.readPixels(0, 0, W, H, gl.RGBA, gl.FLOAT, buf);
+       if (gl.getError() !== gl.NO_ERROR) return 0;
+       if (!gpuLastV || gpuLastV.length !== n) gpuLastV = new Float32Array(n);
+       let diff = 0;
+       for (let i = 0; i < n; i++) {
+         const v = buf[i * 4 + 1];
+         diff += Math.abs(v - gpuLastV[i]);
+         gpuLastV[i] = v;
+       }
+       return diff;
+     }
+
+     /* ---------- 7. Export ---------- */
     let loopSuspended = false;   // freezes sim+render during high-res export
     let exporting = false;
     let hiResCancel = false;
 
     function exportBasename() {
       return `organica_${params.seed}_f${params.f}_k${params.k}`;
+    }
+
+    // User-supplied filename (without extension); falls back to the auto
+    // basename when left blank.
+    function exportName() {
+      const v = $('ctl-exname').value.trim().replace(/\.png$/i, '');
+      return v || exportBasename();
     }
 
     function downloadBlob(blob, filename) {
@@ -1572,7 +1630,7 @@ function renderCPU() {
     $('btn-export').addEventListener('click', () => {
       if (exporting) return;
       canvas.toBlob((blob) => {
-        if (blob) downloadBlob(blob, exportBasename() + '.png');
+        if (blob) downloadBlob(blob, exportName() + '.png');
       }, 'image/png');
     });
 
@@ -1586,7 +1644,8 @@ function renderCPU() {
       loopSuspended = true;
 
       const size = parseInt($('ctl-exsize').value, 10);
-      const iters = Math.min(frameCount, 5000); // cap per spec §10.2
+      // Match the visible sim: it runs stepsPerFrame ticks per displayed frame.
+      const iters = Math.min(frameCount * exParams.stepsPerFrame, 5000); // cap per spec §10.2
       const exParams = Object.assign({}, params);
 
       // save live state — tick() swaps buffer references, so save all four
@@ -1635,7 +1694,7 @@ function renderCPU() {
         }
         octx.putImageData(im, 0, 0);
         out.toBlob((blob) => {
-          if (blob) downloadBlob(blob, exportBasename() + '.png');
+          if (blob) downloadBlob(blob, exportName() + '.png');
         }, 'image/png');
         restore();
       }
@@ -1712,20 +1771,34 @@ function renderCPU() {
     $('btn-json').addEventListener('click', function() { copyParamsJson(this); });
 
     /* ---------- 8. Transport, shortcuts, fullscreen, hash ---------- */
-    let running = true;
+    let running = false;
+    let simState = 'idle'; // 'idle' | 'running' | 'paused' | 'done'
     let stableCount = 0;
-    const stableThreshold = 0.001; // minimal V-change to consider "stable"
-    const stableFrames = 15; // require this many stable frames to auto-pause
+    let gpuLastV = null; // previous GPU V snapshot for stability diff
+    // Average per-cell V change below this (after stableFrames consecutive
+    // frames) is treated as "converged" → auto-stop with status "Done".
+    const stableThreshold = 1e-5;
+    const stableFrames = 15;
     const btnPlay = $('btn-play');
     const btnStep = $('btn-step');
+    const simStatusEl = $('sim-status');
 
-    function setRunning(v) {
-      running = v;
-      btnPlay.textContent = v ? '⏸ Pause' : '▶ Resume';
-      btnStep.disabled = v; // spec §8: Step only meaningful while paused
+    function setSimState(state) {
+      simState = state;
+      const labels = { idle: 'Idle', running: 'Running', paused: 'Paused', done: 'Done' };
+      simStatusEl.textContent = labels[state] || state;
+      simStatusEl.className = 'sim-status sim-' + state;
+      if (state === 'running') { btnPlay.textContent = '⏸ Pause'; btnStep.disabled = true; }
+      else if (state === 'paused') { btnPlay.textContent = '▶ Resume'; btnStep.disabled = false; }
+      else { btnPlay.textContent = '▶ Start'; btnStep.disabled = false; } // idle, done
     }
 
-    btnPlay.addEventListener('click', () => setRunning(!running));
+    function togglePlay() {
+      if (simState === 'running') { running = false; setSimState('paused'); }
+      else { running = true; setSimState('running'); }
+    }
+
+    btnPlay.addEventListener('click', togglePlay);
 
     btnStep.addEventListener('click', () => {
       if (running) return;
@@ -1743,7 +1816,7 @@ function renderCPU() {
       switch (e.code) {
         case 'Space':
           e.preventDefault();
-          if (!e.repeat) setRunning(!running);
+          if (!e.repeat) togglePlay();
           break;
         case 'KeyR':
           reseed();
@@ -1863,28 +1936,30 @@ function renderCPU() {
           if (gpu.active) {
             gpuEnsureSize();
             gpuStep(params.stepsPerFrame);
-            stableCount = 0;
           } else {
             for (let s = 0; s < params.stepsPerFrame; s++) tick(params);
           }
           frameCount++;
           fpsFrames++;
 
-          // --- stability detection (CPU only) ---
+          // --- stability detection (both CPU and GPU) ---
           let vDiff = 0;
-          if (!gpu.active) {
+          if (gpu.active) {
+            vDiff = gpuStabilityDiff(); // 0 if float readback unsupported
+          } else {
             for (let i = 0; i < W * H; i++) {
               vDiff += Math.abs(V[i] - prevV[i]);
             }
-            if (vDiff < stableThreshold) {
-              stableCount++;
-              if (stableCount >= stableFrames) {
-                running = false;
-                setRunning(false);
-              }
-            } else {
-              stableCount = 0;
+          }
+          const avgChange = vDiff / (W * H);
+          if (avgChange < stableThreshold) {
+            stableCount++;
+            if (stableCount >= stableFrames) {
+              running = false;
+              setSimState('done');
             }
+          } else {
+            stableCount = 0;
           }
           // ---------------------------------
         }
