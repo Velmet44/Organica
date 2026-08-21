@@ -238,7 +238,30 @@
     #frameCounter { left: 24px; }
     #fpsCounter { right: 24px; }
 
-    /* TODO: Stage 4 — preset buttons row */
+    /* Preset buttons */
+    #preset-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .preset-btn {
+      background: transparent;
+      border: 1px solid var(--accent);
+      border-radius: 999px;
+      color: var(--accent);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      padding: 4px 10px;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s;
+    }
+    .preset-btn:hover { background: rgba(110, 142, 251, 0.15); }
+    .preset-btn.active {
+      background: var(--accent);
+      color: #0a0a0f;
+    }
+
     /* TODO: Stage 7 — export buttons + progress modal */
     /* TODO: Stage 8 — keyboard shortcut legend, fullscreen button, About tooltip */
   </style>
@@ -258,7 +281,10 @@
     </div>
 
     <aside id="panel">
-      <!-- TODO: Stage 4 — preset buttons row -->
+      <section class="panel-section" id="sec-presets">
+        <h2>Presets</h2>
+        <div id="preset-row"></div>
+      </section>
 
       <section class="panel-section" id="sec-sim">
         <h2>Simulation</h2>
@@ -629,14 +655,18 @@
     const $ = (id) => document.getElementById(id);
 
     // Slider descriptors: id -> [label, symbol, min, max, step, decimals]
+    // NOTE: f/k use step 0.0001 because the spec §5 preset values (e.g. 0.0545)
+    // carry 4 decimals — a 0.001-step slider would snap and desync from presets.
     const SLIDERS = [
-      ['f',             'Feed Rate',   'f',   0.010, 0.100, 0.001, 3, 'sec-sim'],
-      ['k',             'Kill Rate',   'k',   0.045, 0.075, 0.001, 3, 'sec-sim'],
+      ['f',             'Feed Rate',   'f',   0.010, 0.100, 0.0001, 4, 'sec-sim'],
+      ['k',             'Kill Rate',   'k',   0.045, 0.075, 0.0001, 4, 'sec-sim'],
       ['Du',            'Diffusion U', 'Du',  0.050, 0.400, 0.005, 3, 'sec-sim'],
       ['Dv',            'Diffusion V', 'Dv',  0.010, 0.250, 0.005, 3, 'sec-sim'],
       ['stepsPerFrame', 'Steps / Frame', '',  1,     40,    1,     0, 'sec-sim'],
       ['colorBias',     'Colour Bias', '',    0.0,   1.0,   0.01,  2, 'sec-visual']
     ];
+
+    const ctlRefs = {}; // key -> { input, out, decimals }
 
     function buildSliderRow(cfg) {
       const [key, label, sym, min, max, step, decimals, sectionId] = cfg;
@@ -654,13 +684,85 @@
       const out = row.querySelector('.val');
       input.value = params[key];
       out.textContent = Number(params[key]).toFixed(decimals);
+      ctlRefs[key] = { input, out, decimals };
 
       input.addEventListener('input', () => {
         params[key] = parseFloat(input.value);
         out.textContent = params[key].toFixed(decimals);
+        if (key === 'f' || key === 'k') setActivePreset(null); // deviated from preset
       });
     }
     SLIDERS.forEach(buildSliderRow);
+
+    /* ---------- Presets (spec §5) ---------- */
+    const PRESETS = [
+      { name: 'Coral',         f: 0.0545, k: 0.0620, seedMode: 'spots',          palette: 'fire',
+        desc: 'Dense worm-like branching' },
+      { name: 'Spots',         f: 0.0367, k: 0.0649, seedMode: 'spots',          palette: 'viridis',
+        desc: 'Classic Turing spots' },
+      { name: 'Labyrinth',     f: 0.0390, k: 0.0580, seedMode: 'noise',          palette: 'magma',
+        desc: 'Endless maze corridors' },
+      { name: 'Mitosis',       f: 0.0272, k: 0.0513, seedMode: 'spots',          palette: 'ice',
+        desc: 'Cells that divide and drift' },
+      { name: 'Solitons',      f: 0.0140, k: 0.0540, seedMode: 'center',         palette: 'plasma',
+        desc: 'Stable moving blobs' },
+      { name: 'Zebra',         f: 0.0620, k: 0.0609, seedMode: 'stripe',         palette: 'grayscale',
+        desc: 'Parallel stripe bands' },
+      { name: 'U-Skate World', f: 0.0620, k: 0.0610, seedMode: 'random_scatter', palette: 'thermal',
+        desc: 'Self-propelled gliders' },
+      { name: 'Extinction',    f: 0.0200, k: 0.0650, seedMode: 'cross',          palette: 'alien',
+        desc: 'Pattern slowly dies (edge case)' }
+    ];
+
+    let activePresetBtn = null;
+
+    function setActivePreset(name) {
+      if (activePresetBtn) activePresetBtn.classList.remove('active');
+      activePresetBtn = null;
+      if (!name) return;
+      const btn = $('preset-row').querySelector(`[data-preset="${name}"]`);
+      if (btn) {
+        btn.classList.add('active');
+        activePresetBtn = btn;
+      }
+    }
+
+    function applyPreset(preset) {
+      params.f = preset.f;
+      params.k = preset.k;
+      ctlRefs.f.input.value = preset.f;
+      ctlRefs.f.out.textContent = preset.f.toFixed(ctlRefs.f.decimals);
+      ctlRefs.k.input.value = preset.k;
+      ctlRefs.k.out.textContent = preset.k.toFixed(ctlRefs.k.decimals);
+
+      params.seedMode = preset.seedMode;
+      $('ctl-seedmode').value = preset.seedMode;
+
+      if (preset.palette) {
+        params.palette = preset.palette;
+        $('ctl-palette').value = preset.palette;
+      }
+
+      params.seed = randomSeedString(); // each click feels fresh
+      $('ctl-seed').value = params.seed;
+      reseed();
+
+      setActivePreset(preset.name);
+    }
+
+    function buildPresetButtons() {
+      const rowEl = $('preset-row');
+      PRESETS.forEach(p => {
+        const btn = document.createElement('button');
+        btn.className = 'preset-btn';
+        btn.dataset.preset = p.name;
+        btn.textContent = p.name;
+        btn.title = `${p.desc} — f=${p.f}, k=${p.k}`;
+        btn.addEventListener('click', () => applyPreset(p));
+        rowEl.appendChild(btn);
+      });
+    }
+    buildPresetButtons();
 
     $('ctl-palette').addEventListener('change', () => {
       params.palette = $('ctl-palette').value; // rendering wired fully in Stage 5
