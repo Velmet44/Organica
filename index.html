@@ -297,16 +297,16 @@
           <div class="param-head"><label for="ctl-palette">Colour Palette</label></div>
           <select id="ctl-palette">
             <!-- TODO: Stage 5 — enable the remaining palettes -->
-            <option value="grayscale" selected>Grayscale</option>
-            <option value="viridis" disabled>Viridis (soon)</option>
-            <option value="plasma" disabled>Plasma (soon)</option>
-            <option value="inferno" disabled>Inferno (soon)</option>
-            <option value="magma" disabled>Magma (soon)</option>
-            <option value="thermal" disabled>Thermal (soon)</option>
-            <option value="ice" disabled>Ice (soon)</option>
-            <option value="fire" disabled>Fire (soon)</option>
-            <option value="alien" disabled>Alien (soon)</option>
-            <option value="neon" disabled>Neon (soon)</option>
+            <option value="grayscale">Grayscale</option>
+            <option value="viridis">Viridis</option>
+            <option value="plasma">Plasma</option>
+            <option value="inferno">Inferno</option>
+            <option value="magma">Magma</option>
+            <option value="thermal">Thermal</option>
+            <option value="ice">Ice</option>
+            <option value="fire">Fire</option>
+            <option value="alien">Alien</option>
+            <option value="neon">Neon</option>
           </select>
         </div>
         <div class="check-row">
@@ -363,7 +363,7 @@
          1. PRNG        — mulberry32 + string hashing (deterministic seeds)
          2. Parameters  — live parameter object read by the sim
          3. Simulation  — initGrid() / tick(): double-buffered CPU core
-         4. Renderer    — Canvas2D grayscale blit of the V channel
+         4. Renderer    — Canvas2D blit via 256-entry palette LUT (linear RGB)
          5. UI          — control panel wiring (sliders, selects, seed)
          6. Main loop   — requestAnimationFrame, N ticks per frame
        ============================================================ */
@@ -609,31 +609,126 @@
       V = _Vn; V_next = _V;
     }
 
-    /* ---------- 4. Renderer (temporary grayscale display) ---------- */
+    /* ---------- 4. Renderer (CPU Canvas2D, palette LUT) ---------- */
     const canvas = document.getElementById('sim');
     const ctx = canvas.getContext('2d');
     let imgData = null;
 
-    // Tone mapping: gamma-like bias remap then optional invert.
-    // Cached as a 256-entry LUT rebuilt only when bias/invert change.
-    let toneLut = new Uint8Array(256);
-    let toneLutBias = -1, toneLutInvert = null;
+    // Palette stops as [t, r, g, b] with sRGB 0-255 channels.
+    // viridis stops are exact (spec §7); others match their described character.
+    const PALETTES = {
+      grayscale: [
+        [0.0,   0,   0,   0],
+        [1.0, 255, 255, 255]
+      ],
+      viridis: [
+        [0.0,   68,   1,  84],
+        [0.25,  59,  82, 139],
+        [0.5,   33, 145, 140],
+        [0.75,  94, 201,  97],
+        [1.0,  253, 231,  37]
+      ],
+      plasma: [
+        [0.0,   13,   8, 135],
+        [0.25, 126,   3, 168],
+        [0.5,  204,  71, 120],
+        [0.75, 248, 149,  64],
+        [1.0,  240, 249,  33]
+      ],
+      inferno: [
+        [0.0,    0,   0,   4],
+        [0.25,  87,  16, 110],
+        [0.5,  188,  55,  84],
+        [0.75, 249, 142,   9],
+        [1.0,  252, 255, 164]
+      ],
+      magma: [
+        [0.0,    0,   0,   4],
+        [0.25,  81,  18, 124],
+        [0.5,  183,  55, 121],
+        [0.75, 252, 137,  97],
+        [1.0,  252, 253, 191]
+      ],
+      thermal: [
+        [0.0,    0,   0,   0],
+        [0.18,   0, 20, 160],
+        [0.4,    0, 210, 230],
+        [0.6,   30, 200,  60],
+        [0.75, 250, 220,  30],
+        [0.9,  235,  50,  30],
+        [1.0,  255, 255, 255]
+      ],
+      ice: [
+        [0.0,    0,   0,   0],
+        [0.35,  10,  40, 140],
+        [0.7,   60, 190, 230],
+        [1.0,  255, 255, 255]
+      ],
+      fire: [
+        [0.0,    0,   0,   0],
+        [0.3,  140,  20,  10],
+        [0.6,  245, 120,  20],
+        [0.85, 255, 220,  60],
+        [1.0,  255, 255, 240]
+      ],
+      alien: [
+        [0.0,    0,   0,   0],
+        [0.3,   10,  70,  20],
+        [0.6,   30, 180,  60],
+        [0.85, 160, 255,  60],
+        [1.0,  240, 255, 220]
+      ],
+      neon: [
+        [0.0,    5,   0,  20],
+        [0.3,   90,  20, 180],
+        [0.55, 255,  40, 180],
+        [0.8,   40, 230, 255],
+        [1.0,  255, 255, 255]
+      ]
+    };
 
-    function rebuildToneLut() {
+    function srgbToLinear(c) {
+      return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    }
+    function linearToSrgb(c) {
+      return c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+    }
+
+    // mapColor(v): bias remap -> invert -> palette lookup in linear RGB,
+    // converted back to sRGB. Precomputed as a 256-entry LUT rebuilt only
+    // when palette/invert/bias change.
+    let colorLut = new Uint8Array(256 * 3);
+    let lutKey = '';
+
+    function buildColorLut() {
+      const stops = PALETTES[params.palette] || PALETTES.grayscale;
+      const lin = stops.map(([t, r, g, b]) =>
+        [t, srgbToLinear(r / 255), srgbToLinear(g / 255), srgbToLinear(b / 255)]);
       const exponent = 1 / (params.colorBias * 2 + 0.1);
+
       for (let i = 0; i < 256; i++) {
-        let x = Math.pow(i / 255, exponent);
-        if (params.invert) x = 1 - x;
-        toneLut[i] = (x * 255) | 0;
+        let v = Math.pow(i / 255, exponent);          // bias shifts midpoint
+        if (params.invert) v = 1 - v;                 // swap low/high ends
+        const x = v < 0 ? 0 : v > 1 ? 1 : v;
+
+        let s = 0;
+        while (s < lin.length - 2 && x > lin[s + 1][0]) s++;
+        const a = lin[s], b = lin[s + 1];
+        const span = b[0] - a[0];
+        const u = span > 0 ? (x - a[0]) / span : 0;
+
+        for (let ch = 0; ch < 3; ch++) {
+          const lv = a[ch + 1] + (b[ch + 1] - a[ch + 1]) * u; // lerp in linear
+          colorLut[i * 3 + ch] =
+            Math.round(Math.max(0, Math.min(1, linearToSrgb(lv))) * 255);
+        }
       }
-      toneLutBias = params.colorBias;
-      toneLutInvert = params.invert;
+      lutKey = params.palette + '|' + params.invert + '|' + params.colorBias;
     }
 
     function renderCPU() {
-      if (toneLutBias !== params.colorBias || toneLutInvert !== params.invert) {
-        rebuildToneLut();
-      }
+      const key = params.palette + '|' + params.invert + '|' + params.colorBias;
+      if (key !== lutKey) buildColorLut();
       if (!imgData || imgData.width !== W || imgData.height !== H) {
         canvas.width = W;
         canvas.height = H;
@@ -643,10 +738,10 @@
       }
       const d = imgData.data;
       for (let i = 0, j = 0; i < W * H; i++, j += 4) {
-        const c = toneLut[(V[i] * 255) | 0]; // grayscale V (palette arrives Stage 5)
-        d[j] = c;
-        d[j + 1] = c;
-        d[j + 2] = c;
+        const idx = ((V[i] * 255) | 0) * 3;
+        d[j]     = colorLut[idx];
+        d[j + 1] = colorLut[idx + 1];
+        d[j + 2] = colorLut[idx + 2];
       }
       ctx.putImageData(imgData, 0, 0);
     }
@@ -765,7 +860,7 @@
     buildPresetButtons();
 
     $('ctl-palette').addEventListener('change', () => {
-      params.palette = $('ctl-palette').value; // rendering wired fully in Stage 5
+      params.palette = $('ctl-palette').value; // LUT rebuilt on next render
     });
 
     $('ctl-invert').addEventListener('change', () => {

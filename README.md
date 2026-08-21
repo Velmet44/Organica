@@ -15,15 +15,42 @@ Any modern browser works (Chrome, Firefox, Edge, Safari). WebGL is used when ava
 
 ## Parameters
 
-*(Filled in as features land.)*
+Every parameter is live — moving a slider affects the running simulation on the very next tick, no reset needed (except Seed, which repaints the grid).
 
-| Parameter | What it does |
-|---|---|
-| — | — |
+| Parameter | Range | Default | What it does |
+|---|---|---|---|
+| Feed Rate `f` | 0.010 – 0.100 | 0.055 | How fast chemical U is replenished. Together with k it decides what pattern emerges. |
+| Kill Rate `k` | 0.045 – 0.075 | 0.062 | How fast chemical V is removed. Tiny changes (±0.001) produce wildly different patterns. |
+| Diffusion U `Du` | 0.05 – 0.40 | 0.210 | Spread speed of U across the grid. |
+| Diffusion V `Dv` | 0.01 – 0.25 | 0.105 | Spread speed of V (naturally lower than U in interesting regimes). |
+| Steps / Frame | 1 – 40 | 10 | Simulation ticks per animation frame — higher = faster evolution. |
+| Colour Bias | 0.0 – 1.0 | 0.5 | Gamma-like midpoint shift; brightens or darkens midtones without touching black/white points. |
+| Invert Colours | on / off | off | Swaps low and high ends of the palette. |
+| Palette | 10 options | Viridis* | Maps concentration V to colour (see below). |
+| Grid Size | 256 / 512 / 768 / 1024 | 512 | Simulation resolution (resets the grid). |
+| Seed Pattern | 7 modes | Spots | Initial paint layout: spots, stripe, noise, center blob, corners, cross, random scatter. |
+| Seed Value | any text | random | Hashed into the PRNG seed — same text + mode always reproduces the identical starting grid. |
+
+*Default palette at startup follows the active preset.
+
+## Palettes
+
+The V channel is mapped through a 256-entry colour LUT interpolated in **linear RGB** for smooth, non-muddy gradients:
+
+- **Viridis** — purple → teal → yellow (perceptually uniform)
+- **Plasma** — purple → pink → yellow
+- **Inferno** — black → red → yellow → white-hot
+- **Magma** — black → purple → orange → white
+- **Thermal** — black → blue → cyan → green → yellow → red → white (thermal-camera look)
+- **Ice** — black → deep blue → cyan → white
+- **Fire** — black → dark red → orange → yellow → white
+- **Grayscale** — classic black → white
+- **Alien** — black → dark green → bright green → lime → white
+- **Neon** — black → purple → magenta → cyan → white
 
 ## Presets
 
-*(Coming soon.)*
+*(Filled in Stage 4 commit — see panel buttons.)*
 
 ## Keyboard Shortcuts
 
