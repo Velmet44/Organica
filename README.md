@@ -1,6 +1,6 @@
 # Organica — Reaction-Diffusion Engine
 
-**Status: In development** — CPU simulation core running (Gray-Scott, double-buffered, 7 seed modes) with a temporary grayscale preview. UI controls coming next.
+**Status: In development** — CPU simulation core running with a full control panel: all 10 parameters wired (feed/kill rate, diffusion, steps/frame, grid size, seed system, palette/invert/bias), live frame + FPS counters. WebGL renderer, presets, palettes and export coming next.
 
 Organica is a browser-based **Gray-Scott reaction-diffusion pattern engine**: it simulates two virtual chemicals that react and diffuse across a grid, spontaneously organising themselves into the spots, stripes, labyrinths, and coral-like branching patterns seen on animal skins, seashells, and corals. Every parameter — feed rate, kill rate, diffusion, seed pattern, colour palette — can be tuned live while the simulation runs, and any frame can be exported as a print-quality PNG up to 4096×4096.
 

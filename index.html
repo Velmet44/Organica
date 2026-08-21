@@ -79,7 +79,165 @@
       padding: 14px;
     }
 
-    /* TODO: Stage 3 — control panel controls */
+    .panel-section {
+      padding-bottom: 14px;
+      margin-bottom: 14px;
+      border-bottom: 1px solid var(--border);
+    }
+    .panel-section:last-child { border-bottom: none; margin-bottom: 0; }
+
+    .panel-section h2 {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      color: #8888a0;
+      margin-bottom: 10px;
+    }
+
+    .param-row { margin-bottom: 12px; }
+
+    .param-row .param-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 4px;
+    }
+
+    .param-row label {
+      font-size: 13px;
+      color: var(--text);
+    }
+
+    .param-row .sym {
+      color: #8888a0;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      margin-left: 4px;
+    }
+
+    .param-row .val {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 18px;
+      background: transparent;
+      cursor: pointer;
+    }
+    input[type="range"]::-webkit-slider-runnable-track {
+      height: 4px;
+      border-radius: 2px;
+      background: #2a2a3a;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--accent);
+      margin-top: -5px;
+      transition: transform 0.15s;
+    }
+    input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
+    input[type="range"]::-moz-range-track {
+      height: 4px;
+      border-radius: 2px;
+      background: #2a2a3a;
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 14px;
+      height: 14px;
+      border: none;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+
+    select, input[type="text"] {
+      width: 100%;
+      background: #191924;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      padding: 6px 8px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    select:focus, input[type="text"]:focus { border-color: var(--accent); }
+
+    input[type="checkbox"] {
+      accent-color: var(--accent);
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+    }
+
+    .check-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .btn {
+      display: inline-block;
+      width: 100%;
+      background: transparent;
+      border: 1px solid var(--accent);
+      border-radius: 999px;
+      color: var(--accent);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 8px 12px;
+      cursor: pointer;
+      text-align: center;
+      transition: background 0.2s, color 0.2s;
+    }
+    .btn:hover { background: rgba(110, 142, 251, 0.15); }
+
+    .btn-filled {
+      background: var(--accent);
+      color: #0a0a0f;
+    }
+    .btn-filled:hover { background: #8aa4fc; }
+
+    .seed-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .seed-row input { flex: 1; }
+    .seed-row .btn {
+      width: auto;
+      flex-shrink: 0;
+      padding: 6px 10px;
+    }
+
+    /* Canvas overlays */
+    .overlay {
+      position: absolute;
+      bottom: 24px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: rgba(200, 200, 216, 0.85);
+      background: rgba(10, 10, 15, 0.55);
+      padding: 3px 8px;
+      border-radius: 4px;
+      pointer-events: none;
+    }
+    #frameCounter { left: 24px; }
+    #fpsCounter { right: 24px; }
+
     /* TODO: Stage 4 — preset buttons row */
     /* TODO: Stage 7 — export buttons + progress modal */
     /* TODO: Stage 8 — keyboard shortcut legend, fullscreen button, About tooltip */
@@ -95,16 +253,76 @@
   <div id="main">
     <div id="canvas-area">
       <canvas id="sim"></canvas>
-      <!-- TODO: Stage 3 — frame counter overlay (bottom-left) -->
-      <!-- TODO: Stage 3 — FPS counter overlay (bottom-right) -->
+      <div class="overlay" id="frameCounter">Frame: 0</div>
+      <div class="overlay" id="fpsCounter">FPS: --</div>
     </div>
 
     <aside id="panel">
       <!-- TODO: Stage 4 — preset buttons row -->
-      <!-- TODO: Stage 3 — simulation parameter sliders (f, k, Du, Dv, stepsPerFrame) -->
-      <!-- TODO: Stage 5 — visual parameters (palette, invert, colorBias) -->
-      <!-- TODO: Stage 2/3 — initialisation parameters (seedMode, seed, gridSize) -->
-      <!-- TODO: Stage 3 — Reset/Reseed button -->
+
+      <section class="panel-section" id="sec-sim">
+        <h2>Simulation</h2>
+        <!-- slider rows injected by JS -->
+      </section>
+
+      <section class="panel-section" id="sec-visual">
+        <h2>Appearance</h2>
+        <div class="param-row">
+          <div class="param-head"><label for="ctl-palette">Colour Palette</label></div>
+          <select id="ctl-palette">
+            <!-- TODO: Stage 5 — enable the remaining palettes -->
+            <option value="grayscale" selected>Grayscale</option>
+            <option value="viridis" disabled>Viridis (soon)</option>
+            <option value="plasma" disabled>Plasma (soon)</option>
+            <option value="inferno" disabled>Inferno (soon)</option>
+            <option value="magma" disabled>Magma (soon)</option>
+            <option value="thermal" disabled>Thermal (soon)</option>
+            <option value="ice" disabled>Ice (soon)</option>
+            <option value="fire" disabled>Fire (soon)</option>
+            <option value="alien" disabled>Alien (soon)</option>
+            <option value="neon" disabled>Neon (soon)</option>
+          </select>
+        </div>
+        <div class="check-row">
+          <label for="ctl-invert">Invert Colours</label>
+          <input type="checkbox" id="ctl-invert">
+        </div>
+        <!-- colour bias slider row injected by JS -->
+      </section>
+
+      <section class="panel-section" id="sec-init">
+        <h2>Initialisation</h2>
+        <div class="param-row">
+          <div class="param-head"><label for="ctl-seedmode">Seed Pattern</label></div>
+          <select id="ctl-seedmode">
+            <option value="spots" selected>Spots</option>
+            <option value="stripe">Stripe</option>
+            <option value="noise">Noise</option>
+            <option value="center">Center blob</option>
+            <option value="corners">Corners</option>
+            <option value="cross">Cross</option>
+            <option value="random_scatter">Random scatter</option>
+          </select>
+        </div>
+        <div class="param-row">
+          <div class="param-head"><label for="ctl-seed">Seed Value</label></div>
+          <div class="seed-row">
+            <input type="text" id="ctl-seed" spellcheck="false" autocomplete="off">
+            <button class="btn" id="btn-dice" title="Randomise seed">🎲</button>
+          </div>
+        </div>
+        <div class="param-row">
+          <div class="param-head"><label for="ctl-gridsize">Grid Size</label></div>
+          <select id="ctl-gridsize">
+            <option value="256">256 × 256</option>
+            <option value="512" selected>512 × 512</option>
+            <option value="768">768 × 768</option>
+            <option value="1024">1024 × 1024</option>
+          </select>
+        </div>
+        <button class="btn btn-filled" id="btn-reset">Reset / Reseed</button>
+      </section>
+
       <!-- TODO: Stage 7 — export section -->
       <!-- TODO: Stage 8 — shortcuts legend footer -->
     </aside>
@@ -120,7 +338,8 @@
          2. Parameters  — live parameter object read by the sim
          3. Simulation  — initGrid() / tick(): double-buffered CPU core
          4. Renderer    — Canvas2D grayscale blit of the V channel
-         5. Main loop   — requestAnimationFrame, N ticks per frame
+         5. UI          — control panel wiring (sliders, selects, seed)
+         6. Main loop   — requestAnimationFrame, N ticks per frame
        ============================================================ */
 
     /* ---------- 1. PRNG ---------- */
@@ -369,17 +588,36 @@
     const ctx = canvas.getContext('2d');
     let imgData = null;
 
+    // Tone mapping: gamma-like bias remap then optional invert.
+    // Cached as a 256-entry LUT rebuilt only when bias/invert change.
+    let toneLut = new Uint8Array(256);
+    let toneLutBias = -1, toneLutInvert = null;
+
+    function rebuildToneLut() {
+      const exponent = 1 / (params.colorBias * 2 + 0.1);
+      for (let i = 0; i < 256; i++) {
+        let x = Math.pow(i / 255, exponent);
+        if (params.invert) x = 1 - x;
+        toneLut[i] = (x * 255) | 0;
+      }
+      toneLutBias = params.colorBias;
+      toneLutInvert = params.invert;
+    }
+
     function renderCPU() {
+      if (toneLutBias !== params.colorBias || toneLutInvert !== params.invert) {
+        rebuildToneLut();
+      }
       if (!imgData || imgData.width !== W || imgData.height !== H) {
         canvas.width = W;
         canvas.height = H;
         imgData = ctx.createImageData(W, H);
-        const d = imgData.data;
-        for (let j = 3; j < d.length; j += 4) d[j] = 255; // opaque alpha
+        const d0 = imgData.data;
+        for (let j = 3; j < d0.length; j += 4) d0[j] = 255; // opaque alpha
       }
       const d = imgData.data;
       for (let i = 0, j = 0; i < W * H; i++, j += 4) {
-        const c = (V[i] * 255) | 0; // V=0 -> black, V=1 -> white (temporary)
+        const c = toneLut[(V[i] * 255) | 0]; // grayscale V (palette arrives Stage 5)
         d[j] = c;
         d[j + 1] = c;
         d[j + 2] = c;
@@ -387,15 +625,102 @@
       ctx.putImageData(imgData, 0, 0);
     }
 
-    /* ---------- 5. Main loop ---------- */
+    /* ---------- 5. UI — control panel wiring ---------- */
+    const $ = (id) => document.getElementById(id);
+
+    // Slider descriptors: id -> [label, symbol, min, max, step, decimals]
+    const SLIDERS = [
+      ['f',             'Feed Rate',   'f',   0.010, 0.100, 0.001, 3, 'sec-sim'],
+      ['k',             'Kill Rate',   'k',   0.045, 0.075, 0.001, 3, 'sec-sim'],
+      ['Du',            'Diffusion U', 'Du',  0.050, 0.400, 0.005, 3, 'sec-sim'],
+      ['Dv',            'Diffusion V', 'Dv',  0.010, 0.250, 0.005, 3, 'sec-sim'],
+      ['stepsPerFrame', 'Steps / Frame', '',  1,     40,    1,     0, 'sec-sim'],
+      ['colorBias',     'Colour Bias', '',    0.0,   1.0,   0.01,  2, 'sec-visual']
+    ];
+
+    function buildSliderRow(cfg) {
+      const [key, label, sym, min, max, step, decimals, sectionId] = cfg;
+      const row = document.createElement('div');
+      row.className = 'param-row';
+      row.innerHTML =
+        `<div class="param-head">` +
+          `<label for="ctl-${key}">${label}${sym ? `<span class="sym">${sym}</span>` : ''}</label>` +
+          `<span class="val" id="val-${key}"></span>` +
+        `</div>` +
+        `<input type="range" id="ctl-${key}" min="${min}" max="${max}" step="${step}">`;
+      $(sectionId).appendChild(row);
+
+      const input = row.querySelector('input');
+      const out = row.querySelector('.val');
+      input.value = params[key];
+      out.textContent = Number(params[key]).toFixed(decimals);
+
+      input.addEventListener('input', () => {
+        params[key] = parseFloat(input.value);
+        out.textContent = params[key].toFixed(decimals);
+      });
+    }
+    SLIDERS.forEach(buildSliderRow);
+
+    $('ctl-palette').addEventListener('change', () => {
+      params.palette = $('ctl-palette').value; // rendering wired fully in Stage 5
+    });
+
+    $('ctl-invert').addEventListener('change', () => {
+      params.invert = $('ctl-invert').checked;
+    });
+
+    function reseed() {
+      initGrid(params.gridSize, params.gridSize, params.seed, params.seedMode);
+    }
+
+    $('ctl-seedmode').addEventListener('change', () => {
+      params.seedMode = $('ctl-seedmode').value;
+      reseed();
+    });
+
+    $('ctl-seed').addEventListener('change', () => {
+      params.seed = $('ctl-seed').value.trim() || randomSeedString();
+      $('ctl-seed').value = params.seed;
+      reseed();
+    });
+
+    $('btn-dice').addEventListener('click', () => {
+      params.seed = randomSeedString();
+      $('ctl-seed').value = params.seed;
+      reseed();
+    });
+
+    $('ctl-gridsize').addEventListener('change', () => {
+      params.gridSize = parseInt($('ctl-gridsize').value, 10);
+      reseed();
+    });
+
+    $('btn-reset').addEventListener('click', reseed);
+
+    /* ---------- 6. Main loop ---------- */
+    const frameEl = $('frameCounter');
+    const fpsEl = $('fpsCounter');
+    let fpsFrames = 0;
+    let fpsLast = performance.now();
+
+    setInterval(() => {
+      const now = performance.now();
+      fpsEl.textContent = 'FPS: ' + Math.round(fpsFrames * 1000 / (now - fpsLast));
+      fpsFrames = 0;
+      fpsLast = now;
+    }, 1000);
+
     function frame() {
       for (let s = 0; s < params.stepsPerFrame; s++) tick(params);
       frameCount++;
       renderCPU();
+      frameEl.textContent = 'Frame: ' + frameCount;
       requestAnimationFrame(frame);
     }
 
     params.seed = randomSeedString();
+    $('ctl-seed').value = params.seed;
     initGrid(params.gridSize, params.gridSize, params.seed, params.seedMode);
     requestAnimationFrame(frame);
   </script>
