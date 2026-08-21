@@ -534,6 +534,30 @@
         <!-- colour bias slider row injected by JS -->
       </section>
 
+      <section class="panel-section" id="sec-colored">
+        <h2>Colored Seeds</h2>
+        <div class="check-row">
+          <label for="ctl-colored">Enable Colored Seeds</label>
+          <input type="checkbox" id="ctl-colored">
+        </div>
+        <div class="param-row">
+          <div class="param-head"><label for="ctl-seedpalette">Seed Palette</label></div>
+          <select id="ctl-seedpalette">
+            <option value="grayscale">Grayscale</option>
+            <option value="viridis">Viridis</option>
+            <option value="plasma">Plasma</option>
+            <option value="inferno">Inferno</option>
+            <option value="magma">Magma</option>
+            <option value="thermal">Thermal</option>
+            <option value="ice">Ice</option>
+            <option value="fire">Fire</option>
+            <option value="alien">Alien</option>
+            <option value="neon">Neon</option>
+          </select>
+        </div>
+        <!-- seed colour sliders injected by JS -->
+      </section>
+
       <section class="panel-section" id="sec-init">
         <h2>Initialisation</h2>
         <div class="param-row">
@@ -674,17 +698,23 @@
       palette: 'viridis',
       invert: false,
       colorBias: 0.5,
-      vibrance: 1.0         // 0.0 = natural, 1.0 = default, 2.0+ = boosted midtone saturation
+      vibrance: 1.0,        // 0.0 = natural, 1.0 = default, 2.0+ = boosted midtone saturation
+      coloredSeeds: false,   // master toggle for per-seed colouring
+      seedColorDiff: 0.8,    // Seed Colour Difference: spread of colours across seeds
+      seedColorDiffusion: 0.08, // Seed Colour Diffusion: blend softness at joining fronts
+      seedColorOffset: 0.0,  // base rotation of seed colour assignment
+      seedPalette: 'viridis' // palette mapping the seed colour coordinate -> RGB
     };
 
     /* ---------- 3. Simulation core ---------- */
     let W = 0, H = 0;           // grid dimensions
     let U, V, U_next, V_next;   // double-buffered chemical concentrations
+    let C, C_next;              // per-cell seed colour coordinate (0..1)
     let frameCount = 0;
 
     const SEED_U = 0.5, SEED_V = 0.25;
 
-    function paintBlob(cx, cy, radius, uVal, vVal) {
+    function paintBlob(cx, cy, radius, uVal, vVal, cVal) {
       const r2 = radius * radius;
       for (let dy = -radius; dy <= radius; dy++) {
         const yy = (((cy + dy) % H) + H) % H;
@@ -695,11 +725,12 @@
           const i = row + xx;
           U[i] = uVal;
           V[i] = vVal;
+          C[i] = cVal;
         }
       }
     }
 
-    function paintSquare(cx, cy, half, uVal, vVal) {
+    function paintSquare(cx, cy, half, uVal, vVal, cVal) {
       for (let dy = -half; dy <= half; dy++) {
         const yy = (((cy + dy) % H) + H) % H;
         const row = yy * W;
@@ -708,12 +739,13 @@
           const i = row + xx;
           U[i] = uVal;
           V[i] = vVal;
+          C[i] = cVal;
         }
       }
     }
 
     // Paints a full-length band (horizontal strip if vertical=false).
-    function paintBand(pos, thickness, vertical, uVal, vVal) {
+    function paintBand(pos, thickness, vertical, uVal, vVal, cVal) {
       const along = vertical ? W : H;
       for (let a = pos; a < pos + thickness; a++) {
         const aa = ((a % along) + along) % along;
@@ -721,6 +753,7 @@
           const i = vertical ? (b * W + aa) : (aa * W + b);
           U[i] = uVal;
           V[i] = vVal;
+          C[i] = cVal;
         }
       }
     }
@@ -739,19 +772,25 @@
       const n = w * h;
       U = new Float32Array(n);
       V = new Float32Array(n);
+      C = new Float32Array(n);
       U_next = new Float32Array(n);
       V_next = new Float32Array(n);
+      C_next = new Float32Array(n);
       U.fill(1);
       V.fill(0);
 
       const rand = mulberry32(hashStr(seedStr));
+      const frac = (x) => x - Math.floor(x);
+      const diff = params.seedColorDiff;
+      const off = params.seedColorOffset;
 
       switch (mode) {
         case 'spots': {
           const count = 20 + Math.floor(rand() * 61);            // 20-80 blobs
           for (let s = 0; s < count; s++) {
             paintBlob(Math.floor(rand() * w), Math.floor(rand() * h),
-                      2 + Math.floor(rand() * 7), SEED_U, SEED_V); // radius 2-8
+                      2 + Math.floor(rand() * 7), SEED_U, SEED_V,
+                      frac(s / count * diff + off));
           }
           break;
         }
@@ -762,7 +801,7 @@
           for (let b = 0; b < bands; b++) {
             paintBand(Math.floor(rand() * (vertical ? w : h)),
                       1 + Math.floor(rand() * maxThick), vertical,
-                      SEED_U, SEED_V);
+                      SEED_U, SEED_V, frac(b / bands * diff + off));
           }
           break;
         }
@@ -770,32 +809,34 @@
           for (let i = 0; i < n; i++) {
             U[i] = 0.8 + rand() * 0.2;                           // U in [0.8, 1]
             V[i] = rand() * 0.2;                                 // V in [0, 0.2]
+            C[i] = frac(rand() * diff + off);
           }
           break;
         }
         case 'center': {
-          paintSquare(w >> 1, h >> 1, Math.max(4, w >> 3), SEED_U, SEED_V);
+          paintSquare(w >> 1, h >> 1, Math.max(4, w >> 3), SEED_U, SEED_V, frac(off));
           break;
         }
         case 'corners': {
-          const off = Math.max(4, w >> 3);
+          const off2 = Math.max(4, w >> 3);
           const rad = Math.max(3, w >> 4);
-          paintBlob(off, off, rad, SEED_U, SEED_V);
-          paintBlob(w - off, off, rad, SEED_U, SEED_V);
-          paintBlob(off, h - off, rad, SEED_U, SEED_V);
-          paintBlob(w - off, h - off, rad, SEED_U, SEED_V);
+          paintBlob(off2, off2, rad, SEED_U, SEED_V, frac(0 / 4 * diff + off));
+          paintBlob(w - off2, off2, rad, SEED_U, SEED_V, frac(1 / 4 * diff + off));
+          paintBlob(off2, h - off2, rad, SEED_U, SEED_V, frac(2 / 4 * diff + off));
+          paintBlob(w - off2, h - off2, rad, SEED_U, SEED_V, frac(3 / 4 * diff + off));
           break;
         }
         case 'cross': {
           const thick = Math.max(2, Math.round(w / 128));
-          paintBand((w >> 1) - (thick >> 1), thick, false, SEED_U, SEED_V);
-          paintBand((h >> 1) - (thick >> 1), thick, true,  SEED_U, SEED_V);
+          paintBand((w >> 1) - (thick >> 1), thick, false, SEED_U, SEED_V, frac(off));
+          paintBand((h >> 1) - (thick >> 1), thick, true,  SEED_U, SEED_V, frac(off));
           break;
         }
         case 'random_scatter': {
           for (let i = 0; i < n; i++) {
             U[i] = rand();
             V[i] = rand();
+            C[i] = frac(rand() * diff + off);
           }
           break;
         }
@@ -810,7 +851,8 @@
     // first/last column pays for wrap-around index math.
     function tick(p) {
       const f = p.f, k = p.k, Du = p.Du, Dv = p.Dv;
-      const _U = U, _V = V, _Un = U_next, _Vn = V_next;
+      const cDiff = p.coloredSeeds ? p.seedColorDiffusion : 0;
+      const _U = U, _V = V, _Un = U_next, _Vn = V_next, _C = C, _Cn = C_next;
       const lastX = W - 1;
 
       for (let y = 0; y < H; y++) {
@@ -830,11 +872,15 @@
                        (_U[ul] + _U[ur] + _U[dl] + _U[dr]) * 0.05 - _U[i];
           const lapV = (_V[l] + _V[r] + _V[uN] + _V[dN]) * 0.20 +
                        (_V[ul] + _V[ur] + _V[dl] + _V[dr]) * 0.05 - _V[i];
+          const lapC = (_C[l] + _C[r] + _C[uN] + _C[dN]) * 0.20 +
+                       (_C[ul] + _C[ur] + _C[dl] + _C[dr]) * 0.05 - _C[i];
           const re = _U[i] * _V[i] * _V[i];
           let nu = _U[i] + (Du * lapU - re + f * (1 - _U[i]));
           let nv = _V[i] + (Dv * lapV + re - (f + k) * _V[i]);
+          let nc = _C[i] + cDiff * lapC;
           _Un[i] = nu < 0 ? 0 : nu > 1 ? 1 : nu;
           _Vn[i] = nv < 0 ? 0 : nv > 1 ? 1 : nv;
+          _Cn[i] = nc < 0 ? 0 : nc > 1 ? 1 : nc;
         }
 
         // interior columns
@@ -850,14 +896,18 @@
                        (_U[ul] + _U[ur] + _U[dl] + _U[dr]) * 0.05 - _U[i];
           const lapV = (_V[l] + _V[r] + _V[uN] + _V[dN]) * 0.20 +
                        (_V[ul] + _V[ur] + _V[dl] + _V[dr]) * 0.05 - _V[i];
+          const lapC = (_C[l] + _C[r] + _C[uN] + _C[dN]) * 0.20 +
+                       (_C[ul] + _C[ur] + _C[dl] + _C[dr]) * 0.05 - _C[i];
 
           const re = _U[i] * _V[i] * _V[i];
 
           let nu = _U[i] + (Du * lapU - re + f * (1 - _U[i]));
           let nv = _V[i] + (Dv * lapV + re - (f + k) * _V[i]);
+          let nc = _C[i] + cDiff * lapC;
 
           _Un[i] = nu < 0 ? 0 : nu > 1 ? 1 : nu;
           _Vn[i] = nv < 0 ? 0 : nv > 1 ? 1 : nv;
+          _Cn[i] = nc < 0 ? 0 : nc > 1 ? 1 : nc;
         }
 
         // right edge column (wraps to left edge)
@@ -872,17 +922,22 @@
                        (_U[ul] + _U[ur] + _U[dl] + _U[dr]) * 0.05 - _U[i];
           const lapV = (_V[l] + _V[r] + _V[uN] + _V[dN]) * 0.20 +
                        (_V[ul] + _V[ur] + _V[dl] + _V[dr]) * 0.05 - _V[i];
+          const lapC = (_C[l] + _C[r] + _C[uN] + _C[dN]) * 0.20 +
+                       (_C[ul] + _C[ur] + _C[dl] + _C[dr]) * 0.05 - _C[i];
           const re = _U[i] * _V[i] * _V[i];
           let nu = _U[i] + (Du * lapU - re + f * (1 - _U[i]));
           let nv = _V[i] + (Dv * lapV + re - (f + k) * _V[i]);
+          let nc = _C[i] + cDiff * lapC;
           _Un[i] = nu < 0 ? 0 : nu > 1 ? 1 : nu;
           _Vn[i] = nv < 0 ? 0 : nv > 1 ? 1 : nv;
+          _Cn[i] = nc < 0 ? 0 : nc > 1 ? 1 : nc;
         }
       }
 
       // Swap so the freshly written buffers become the read buffers.
       U = _Un; U_next = _U;
       V = _Vn; V_next = _V;
+      C = _Cn; C_next = _C;
     }
 
     /* ---------- 4. Renderer (CPU Canvas2D path, palette LUT) ---------- */
@@ -893,6 +948,8 @@
     let imgData = null;
     let colorLut = new Uint8Array(256 * 3);
     let lutKey = '';
+    let seedColorLut = new Uint8Array(256 * 3);
+    let seedLutKey = '';
 
     function cpuCtx() {
       if (!ctx2d) ctx2d = canvas.getContext('2d');
@@ -1065,12 +1122,53 @@ function buildColorLut() {
     colorLut[i * 3 + 1] = out[1];
     colorLut[i * 3 + 2] = out[2];
   }
-lutKey = params.palette + '|' + params.invert + '|' + params.colorBias + '|' + params.vibrance;
-}
+ lutKey = params.palette + '|' + params.invert + '|' + params.colorBias + '|' + params.vibrance;
+ }
 
-function renderCPU() {
-  const key = params.palette + '|' + params.invert + '|' + params.colorBias + '|' + params.vibrance;
+    // Builds the seed-colour LUT from the chosen seed palette (linear RGB
+    // interpolation, optional invert). Distinct from the V-palette LUT.
+    function buildSeedColorLut() {
+      const stops = PALETTES[params.seedPalette] || PALETTES.grayscale;
+      const lin = stops.map(([t, r, g, b]) =>
+        [t, srgbToLinear(r / 255), srgbToLinear(g / 255), srgbToLinear(b / 255)]);
+      for (let i = 0; i < 256; i++) {
+        let x = i / 255;
+        if (params.invert) x = 1 - x;
+        x = x < 0 ? 0 : x > 1 ? 1 : x;
+        let s = 0;
+        while (s < lin.length - 2 && x > lin[s + 1][0]) s++;
+        const a = lin[s], b = lin[s + 1];
+        const span = b[0] - a[0];
+        const u = span > 0 ? (x - a[0]) / span : 0;
+        seedColorLut[i * 3 + 0] = Math.round(linearToSrgb(a[1] + (b[1] - a[1]) * u) * 255);
+        seedColorLut[i * 3 + 1] = Math.round(linearToSrgb(a[2] + (b[2] - a[2]) * u) * 255);
+        seedColorLut[i * 3 + 2] = Math.round(linearToSrgb(a[3] + (b[3] - a[3]) * u) * 255);
+      }
+      seedLutKey = params.seedPalette + '|' + params.invert;
+    }
+
+    // Displayed RGB (0..255) for cell i, honouring the Colored Seeds toggle.
+    function cellColor(i, out, o) {
+      if (params.coloredSeeds) {
+        const ci = (C[i] * 255) | 0;
+        const sidx = ci * 3;
+        const vn = V[i] > 0.4 ? 1 : V[i] * 2.5; // clamp(V / 0.4, 0, 1)
+        out[o]     = (seedColorLut[sidx]     * vn) | 0;
+        out[o + 1] = (seedColorLut[sidx + 1] * vn) | 0;
+        out[o + 2] = (seedColorLut[sidx + 2] * vn) | 0;
+      } else {
+        const idx = ((V[i] * 255) | 0) * 3;
+        out[o]     = colorLut[idx];
+        out[o + 1] = colorLut[idx + 1];
+        out[o + 2] = colorLut[idx + 2];
+      }
+    }
+
+    function renderCPU() {
+      const key = params.palette + '|' + params.invert + '|' + params.colorBias + '|' + params.vibrance;
       if (key !== lutKey) buildColorLut();
+      const sKey = params.seedPalette + '|' + params.invert;
+      if (params.coloredSeeds && sKey !== seedLutKey) buildSeedColorLut();
       const ctx = cpuCtx();
       if (!ctx) return;
       if (!imgData || imgData.width !== W || imgData.height !== H) {
@@ -1082,10 +1180,7 @@ function renderCPU() {
       }
       const d = imgData.data;
       for (let i = 0, j = 0; i < W * H; i++, j += 4) {
-        const idx = ((V[i] * 255) | 0) * 3;
-        d[j]     = colorLut[idx];
-        d[j + 1] = colorLut[idx + 1];
-        d[j + 2] = colorLut[idx + 2];
+        cellColor(i, d, j);
       }
       ctx.putImageData(imgData, 0, 0);
     }
@@ -1103,7 +1198,10 @@ function renderCPU() {
       ['Dv',            'Diffusion V', 'Dv',  0.010, 0.250, 0.005, 3, 'sec-sim'],
       ['stepsPerFrame', 'Steps / Frame', '',  1,     40,    1,     0, 'sec-sim'],
       ['colorBias',     'Colour Bias', '',    0.0,   1.0,   0.01,  2, 'sec-visual'],
-      ['vibrance',      'Vibrance',    '',    0.0,   2.0,   0.05,  2, 'sec-visual']
+      ['vibrance',      'Vibrance',    '',    0.0,   2.0,   0.05,  2, 'sec-visual'],
+      ['seedColorDiff',     'Seed Color Diff', '', 0.0,   1.0,   0.01,  2, 'sec-colored'],
+      ['seedColorDiffusion','Seed Color Diffusion','',0.0,0.25,  0.005, 3, 'sec-colored'],
+      ['seedColorOffset',   'Seed Color Offset', '', 0.0, 1.0,   0.01,  2, 'sec-colored']
     ];
 
     const ctlRefs = {}; // key -> { input, out, decimals }
@@ -1136,21 +1234,29 @@ function renderCPU() {
 
     /* ---------- Presets (spec §5) ---------- */
     const PRESETS = [
-      { name: 'Coral',         f: 0.0545, k: 0.0620, seedMode: 'spots',          palette: 'fire',
+      { name: 'Coral',         f: 0.0545, k: 0.0620, seedMode: 'spots',           palette: 'fire',
+        coloredSeeds: true, seedPalette: 'fire',    seedColorDiff: 0.70, seedColorDiffusion: 0.10, seedColorOffset: 0.00,
         desc: 'Dense worm-like branching' },
-      { name: 'Spots',         f: 0.0367, k: 0.0649, seedMode: 'spots',          palette: 'viridis',
+      { name: 'Spots',         f: 0.0367, k: 0.0649, seedMode: 'spots',           palette: 'viridis',
+        coloredSeeds: true, seedPalette: 'viridis', seedColorDiff: 1.00, seedColorDiffusion: 0.06, seedColorOffset: 0.10,
         desc: 'Classic Turing spots' },
-      { name: 'Labyrinth',     f: 0.0390, k: 0.0580, seedMode: 'noise',          palette: 'magma',
+      { name: 'Labyrinth',     f: 0.0390, k: 0.0580, seedMode: 'noise',           palette: 'magma',
+        coloredSeeds: true, seedPalette: 'magma',   seedColorDiff: 0.50, seedColorDiffusion: 0.12, seedColorOffset: 0.30,
         desc: 'Endless maze corridors' },
-      { name: 'Mitosis',       f: 0.0272, k: 0.0513, seedMode: 'spots',          palette: 'ice',
+      { name: 'Mitosis',       f: 0.0272, k: 0.0513, seedMode: 'spots',           palette: 'ice',
+        coloredSeeds: true, seedPalette: 'ice',     seedColorDiff: 0.90, seedColorDiffusion: 0.05, seedColorOffset: 0.50,
         desc: 'Cells that divide and drift' },
-      { name: 'Solitons',      f: 0.0140, k: 0.0540, seedMode: 'center',         palette: 'plasma',
+      { name: 'Solitons',      f: 0.0140, k: 0.0540, seedMode: 'center',          palette: 'plasma',
+        coloredSeeds: true, seedPalette: 'plasma',  seedColorDiff: 0.80, seedColorDiffusion: 0.08, seedColorOffset: 0.20,
         desc: 'Stable moving blobs' },
-      { name: 'Zebra',         f: 0.0620, k: 0.0609, seedMode: 'stripe',         palette: 'grayscale',
+      { name: 'Zebra',         f: 0.0620, k: 0.0609, seedMode: 'stripe',          palette: 'grayscale',
+        coloredSeeds: true, seedPalette: 'neon',    seedColorDiff: 1.00, seedColorDiffusion: 0.03, seedColorOffset: 0.00,
         desc: 'Parallel stripe bands' },
-      { name: 'U-Skate World', f: 0.0620, k: 0.0610, seedMode: 'random_scatter', palette: 'thermal',
+      { name: 'U-Skate World', f: 0.0620, k: 0.0610, seedMode: 'random_scatter',  palette: 'thermal',
+        coloredSeeds: true, seedPalette: 'thermal', seedColorDiff: 1.00, seedColorDiffusion: 0.15, seedColorOffset: 0.60,
         desc: 'Self-propelled gliders' },
-      { name: 'Extinction',    f: 0.0200, k: 0.0650, seedMode: 'cross',          palette: 'alien',
+      { name: 'Extinction',    f: 0.0200, k: 0.0650, seedMode: 'cross',           palette: 'alien',
+        coloredSeeds: true, seedPalette: 'alien',   seedColorDiff: 0.60, seedColorDiffusion: 0.20, seedColorOffset: 0.40,
         desc: 'Pattern slowly dies (edge case)' }
     ];
 
@@ -1183,6 +1289,23 @@ function renderCPU() {
         $('ctl-palette').value = preset.palette;
       }
 
+      if (preset.coloredSeeds !== undefined) {
+        params.coloredSeeds = !!preset.coloredSeeds;
+        params.seedPalette = preset.seedPalette;
+        params.seedColorDiff = preset.seedColorDiff;
+        params.seedColorDiffusion = preset.seedColorDiffusion;
+        params.seedColorOffset = preset.seedColorOffset;
+        $('ctl-colored').checked = params.coloredSeeds;
+        $('ctl-seedpalette').value = params.seedPalette;
+        for (const k of ['seedColorDiff', 'seedColorDiffusion', 'seedColorOffset']) {
+          if (ctlRefs[k]) {
+            ctlRefs[k].input.value = params[k];
+            ctlRefs[k].out.textContent = params[k].toFixed(ctlRefs[k].decimals);
+          }
+        }
+        applyColoredEnabled();
+      }
+
       params.seed = randomSeedString(); // each click feels fresh
       $('ctl-seed').value = params.seed;
       reseed();
@@ -1210,6 +1333,28 @@ function renderCPU() {
 
     $('ctl-invert').addEventListener('change', () => {
       params.invert = $('ctl-invert').checked;
+      if (W > 0) { if (gpu.active) gpuDisplay(); else renderCPU(); }
+    });
+
+    // --- Colored Seeds controls ---
+    // Enable/disable every control under the Colored Seeds master checkbox.
+    function applyColoredEnabled() {
+      const on = params.coloredSeeds;
+      $('ctl-seedpalette').disabled = !on;
+      for (const k of ['seedColorDiff', 'seedColorDiffusion', 'seedColorOffset']) {
+        if (ctlRefs[k]) ctlRefs[k].input.disabled = !on;
+      }
+      if (W > 0) { if (gpu.active) gpuDisplay(); else renderCPU(); }
+    }
+
+    $('ctl-colored').addEventListener('change', () => {
+      params.coloredSeeds = $('ctl-colored').checked;
+      applyColoredEnabled();
+    });
+
+    $('ctl-seedpalette').addEventListener('change', () => {
+      params.seedPalette = $('ctl-seedpalette').value;
+      if (W > 0) { if (gpu.active) gpuDisplay(); else renderCPU(); }
     });
 
     function reseed() {
@@ -1267,6 +1412,8 @@ function renderCPU() {
       read: 0,
       lutTex: null,
       lutKeyGPU: '',
+      seedLutTex: null,
+      seedLutKeyGPU: '',
       size: 0,
       canReadback: false
     };
@@ -1282,41 +1429,62 @@ function renderCPU() {
     const SIM_FRAG_SRC = `
       precision highp float;
       uniform sampler2D uState;
-      uniform float uF, uK, uDu, uDv, uDt;
+      uniform float uF, uK, uDu, uDv, uDt, uSeedDiff;
       uniform vec2 uTexel;
       varying vec2 v_texCoord;
 
-      vec2 s(vec2 off) {
-        return texture2D(uState, fract(v_texCoord + off)).rg;
+      vec3 s(vec2 off) {
+        return texture2D(uState, fract(v_texCoord + off)).rgb;
       }
 
       void main() {
-        vec2 c = texture2D(uState, v_texCoord).rg;
-        float U = c.r, V = c.g;
+        vec3 st = texture2D(uState, v_texCoord).rgb;
+        float U = st.r, V = st.g, c = st.b;
 
         vec2 lap = vec2(0.0);
         lap += 0.20 * (s(vec2( uTexel.x, 0.0)) + s(vec2(-uTexel.x, 0.0)) +
                        s(vec2(0.0,  uTexel.y)) + s(vec2(0.0, -uTexel.y)));
         lap += 0.05 * (s(vec2( uTexel.x,  uTexel.y)) + s(vec2(-uTexel.x,  uTexel.y)) +
                        s(vec2( uTexel.x, -uTexel.y)) + s(vec2(-uTexel.x, -uTexel.y)));
-        lap -= c;
+        lap -= st.rg;
+
+        float lapC = 0.20 * (s(vec2( uTexel.x, 0.0)).b + s(vec2(-uTexel.x, 0.0)).b +
+                             s(vec2(0.0,  uTexel.y)).b + s(vec2(0.0, -uTexel.y)).b)
+                  + 0.05 * (s(vec2( uTexel.x,  uTexel.y)).b + s(vec2(-uTexel.x,  uTexel.y)).b +
+                            s(vec2( uTexel.x, -uTexel.y)).b + s(vec2(-uTexel.x, -uTexel.y)).b)
+                  - c;
 
         float reaction = U * V * V;
         float dU = uDu * lap.r - reaction + uF * (1.0 - U);
         float dV = uDv * lap.g + reaction - (uF + uK) * V;
+        float dC = uSeedDiff * lapC;
 
         gl_FragColor = vec4(clamp(U + uDt * dU, 0.0, 1.0),
-                            clamp(V + uDt * dV, 0.0, 1.0), 0.0, 1.0);
+                            clamp(V + uDt * dV, 0.0, 1.0),
+                            clamp(c + dC, 0.0, 1.0), 1.0);
       }`;
 
     const DISP_FRAG_SRC = `
       precision highp float;
       uniform sampler2D uState;
       uniform sampler2D uLut;
+      uniform sampler2D uSeedLut;
+      uniform float uColored;
+      uniform float uVRef;
       varying vec2 v_texCoord;
       void main() {
-        float V = texture2D(uState, v_texCoord).g;
-        gl_FragColor = vec4(texture2D(uLut, vec2(V * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb, 1.0);
+        vec4 st = texture2D(uState, v_texCoord);
+        float V = st.g;
+        float c = st.b;
+        vec3 col;
+        if (uColored > 0.5) {
+          vec3 sc = texture2D(uSeedLut, vec2(c * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
+          float vn = clamp(V / uVRef, 0.0, 1.0);
+          col = sc * vn;
+        } else {
+          col = texture2D(uLut, vec2(V * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
+        }
+        gl_FragColor = vec4(col, 1.0);
       }`;
 
     function setCpuMode() {
@@ -1430,10 +1598,19 @@ function renderCPU() {
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 
+        // Seed-colour LUT texture (256x1 RGBA bytes)
+        const seedLutTex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, seedLutTex);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
         gpu.gl = gl;
         gpu.progSim = progSim;
         gpu.progDisp = progDisp;
         gpu.lutTex = lutTex;
+        gpu.seedLutTex = seedLutTex;
         gpu.uniSim = {
           state: gl.getUniformLocation(progSim, 'uState'),
           f: gl.getUniformLocation(progSim, 'uF'),
@@ -1441,11 +1618,15 @@ function renderCPU() {
           du: gl.getUniformLocation(progSim, 'uDu'),
           dv: gl.getUniformLocation(progSim, 'uDv'),
           dt: gl.getUniformLocation(progSim, 'uDt'),
-          texel: gl.getUniformLocation(progSim, 'uTexel')
+          texel: gl.getUniformLocation(progSim, 'uTexel'),
+          seedDiff: gl.getUniformLocation(progSim, 'uSeedDiff')
         };
         gpu.uniDisp = {
           state: gl.getUniformLocation(progDisp, 'uState'),
-          lut: gl.getUniformLocation(progDisp, 'uLut')
+          lut: gl.getUniformLocation(progDisp, 'uLut'),
+          seedLut: gl.getUniformLocation(progDisp, 'uSeedLut'),
+          colored: gl.getUniformLocation(progDisp, 'uColored'),
+          vref: gl.getUniformLocation(progDisp, 'uVRef')
         };
 
         // adopt the working context: swap the GPU-backed canvas in as #sim
@@ -1477,6 +1658,7 @@ function renderCPU() {
       for (let i = 0, j = 0; i < n; i++, j += 4) {
         out[j] = U[i];
         out[j + 1] = V[i];
+        out[j + 2] = C[i];
         out[j + 3] = 1.0;
       }
       return out;
@@ -1510,6 +1692,18 @@ function renderCPU() {
       gl.bindTexture(gl.TEXTURE_2D, gpu.lutTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
       gpu.lutKeyGPU = lutKey;
+
+      // seed-colour LUT
+      const srgba = new Uint8Array(256 * 4);
+      for (let i = 0; i < 256; i++) {
+        srgba[i * 4]     = seedColorLut[i * 3];
+        srgba[i * 4 + 1] = seedColorLut[i * 3 + 1];
+        srgba[i * 4 + 2] = seedColorLut[i * 3 + 2];
+        srgba[i * 4 + 3] = 255;
+      }
+      gl.bindTexture(gl.TEXTURE_2D, gpu.seedLutTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, srgba);
+      gpu.seedLutKeyGPU = seedLutKey;
     }
 
     function gpuStep(steps) {
@@ -1525,6 +1719,7 @@ function renderCPU() {
       gl.uniform1f(gpu.uniSim.dv, params.Dv);
       gl.uniform1f(gpu.uniSim.dt, 1.0); // spec: fixed timestep
       gl.uniform2f(gpu.uniSim.texel, 1 / W, 1 / H);
+      gl.uniform1f(gpu.uniSim.seedDiff, params.coloredSeeds ? params.seedColorDiffusion : 0.0);
 
       for (let i = 0; i < steps; i++) {
         const write = 1 - gpu.read;
@@ -1543,6 +1738,12 @@ function renderCPU() {
       if (key !== gpu.lutKeyGPU) {
         buildColorLut();
         gpuUploadLut();
+      } else if (params.coloredSeeds) {
+        const sKey = params.seedPalette + '|' + params.invert;
+        if (sKey !== gpu.seedLutKeyGPU) {
+          buildSeedColorLut();
+          gpuUploadLut();
+        }
       }
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, W, H);
@@ -1553,6 +1754,13 @@ function renderCPU() {
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, gpu.lutTex);
       gl.uniform1i(gpu.uniDisp.lut, 1);
+      if (params.coloredSeeds) {
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, gpu.seedLutTex);
+        gl.uniform1i(gpu.uniDisp.seedLut, 2);
+      }
+      gl.uniform1f(gpu.uniDisp.colored, params.coloredSeeds ? 1.0 : 0.0);
+      gl.uniform1f(gpu.uniDisp.vref, 0.4);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }
 
@@ -1643,13 +1851,14 @@ function renderCPU() {
       exporting = true;
       loopSuspended = true;
 
+      const exParams = Object.assign({}, params);
       const size = parseInt($('ctl-exsize').value, 10);
       // Match the visible sim: it runs stepsPerFrame ticks per displayed frame.
       const iters = Math.min(frameCount * exParams.stepsPerFrame, 5000); // cap per spec §10.2
-      const exParams = Object.assign({}, params);
 
-      // save live state — tick() swaps buffer references, so save all four
+      // save live state — tick() swaps buffer references, so save all of them
       const savedU = U, savedV = V, savedUn = U_next, savedVn = V_next;
+      const savedC = C, savedCn = C_next;
       const savedW = W, savedH = H, savedFc = frameCount;
 
       initGrid(size, size, exParams.seed, exParams.seedMode);
@@ -1666,6 +1875,7 @@ function renderCPU() {
       function restore() {
         U = savedU; V = savedV;
         U_next = savedUn; V_next = savedVn;
+        C = savedC; C_next = savedCn;
         W = savedW; H = savedH;
         frameCount = savedFc;
         imgData = null; // dimensions changed under it
@@ -1677,20 +1887,19 @@ function renderCPU() {
 
       function finish() {
         if (hiResCancel) { restore(); return; }
+        const key = params.palette + '|' + params.invert + '|' + params.colorBias + '|' + params.vibrance;
+        if (key !== lutKey) buildColorLut();
+        const sKey = params.seedPalette + '|' + params.invert;
+        if (params.coloredSeeds && sKey !== seedLutKey) buildSeedColorLut();
         const out = document.createElement('canvas');
         out.width = size;
         out.height = size;
         const octx = out.getContext('2d');
         const im = octx.createImageData(size, size);
         const d = im.data;
-        const key = params.palette + '|' + params.invert + '|' + params.colorBias + '|' + params.vibrance;
-        if (key !== lutKey) buildColorLut();
         for (let j = 3; j < d.length; j += 4) d[j] = 255;
         for (let i = 0, j = 0; i < size * size; i++, j += 4) {
-          const idx = ((V[i] * 255) | 0) * 3;
-          d[j]     = colorLut[idx];
-          d[j + 1] = colorLut[idx + 1];
-          d[j + 2] = colorLut[idx + 2];
+          cellColor(i, d, j);
         }
         octx.putImageData(im, 0, 0);
         out.toBlob((blob) => {
@@ -1736,6 +1945,11 @@ function renderCPU() {
         palette: params.palette,
         invert: params.invert,
         colorBias: params.colorBias,
+        coloredSeeds: params.coloredSeeds,
+        seedPalette: params.seedPalette,
+        seedColorDiff: params.seedColorDiff,
+        seedColorDiffusion: params.seedColorDiffusion,
+        seedColorOffset: params.seedColorOffset,
         iterationsAtExport: frameCount
       }, null, 2);
     }
@@ -1892,7 +2106,8 @@ function renderCPU() {
         if (!location.hash || location.hash.length < 3) return false;
         const obj = JSON.parse(decodeURIComponent(escape(atob(location.hash.slice(1)))));
         const keys = ['f','k','Du','Dv','stepsPerFrame','gridSize',
-                      'seed','seedMode','palette','invert','colorBias','vibrance'];
+                      'seed','seedMode','palette','invert','colorBias','vibrance',
+                      'coloredSeeds','seedPalette','seedColorDiff','seedColorDiffusion','seedColorOffset'];
         let touched = false;
         for (const kk of keys) {
           if (kk in obj) { params[kk] = obj[kk]; touched = true; }
@@ -1914,6 +2129,9 @@ function renderCPU() {
       $('ctl-gridsize').value = String(params.gridSize);
       $('ctl-palette').value = params.palette;
       $('ctl-invert').checked = !!params.invert;
+      $('ctl-colored').checked = !!params.coloredSeeds;
+      $('ctl-seedpalette').value = params.seedPalette;
+      applyColoredEnabled();
     }
 
     /* ---------- 9. Main loop ---------- */
