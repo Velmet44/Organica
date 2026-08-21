@@ -281,7 +281,68 @@
     }
     #mode-banner.visible { display: block; }
 
-    /* TODO: Stage 7 — export buttons + progress modal */
+    /* Export modal */
+    #export-modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(5, 5, 10, 0.75);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+    #export-modal.visible { display: flex; }
+
+    .modal-box {
+      background: var(--panel-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 24px;
+      width: 340px;
+      box-shadow: 0 0 40px rgba(110, 142, 251, 0.2);
+    }
+    .modal-box h3 {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 14px;
+    }
+    .progress-track {
+      height: 8px;
+      background: #2a2a3a;
+      border-radius: 4px;
+      overflow: hidden;
+      margin-bottom: 10px;
+    }
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--accent);
+      border-radius: 4px;
+      transition: width 0.15s;
+    }
+    #export-status {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: #8888a0;
+      margin-bottom: 16px;
+    }
+
+    /* Copied-tooltip */
+    .copy-tip {
+      position: absolute;
+      transform: translateY(-100%);
+      background: var(--accent);
+      color: #0a0a0f;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: 999px;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    .copy-tip.show { opacity: 1; }
+
     /* TODO: Stage 8 — keyboard shortcut legend, fullscreen button, About tooltip */
   </style>
 </head>
@@ -369,9 +430,33 @@
         <button class="btn btn-filled" id="btn-reset">Reset / Reseed</button>
       </section>
 
-      <!-- TODO: Stage 7 — export section -->
+      <section class="panel-section" id="sec-export">
+        <h2>Export</h2>
+        <button class="btn" id="btn-export" style="margin-bottom:8px">📷 Export PNG</button>
+        <div class="param-row">
+          <div class="param-head"><label for="ctl-exsize">Export Size</label></div>
+          <select id="ctl-exsize">
+            <option value="512">512 × 512</option>
+            <option value="1024">1024 × 1024</option>
+            <option value="2048">2048 × 2048</option>
+            <option value="4096">4096 × 4096</option>
+          </select>
+        </div>
+        <button class="btn" id="btn-hires" style="margin-bottom:8px">High-Res Render…</button>
+        <button class="btn" id="btn-json">Copy Parameters JSON</button>
+      </section>
+
       <!-- TODO: Stage 8 — shortcuts legend footer -->
     </aside>
+  </div>
+
+  <div id="export-modal">
+    <div class="modal-box">
+      <h3>Rendering high-res export</h3>
+      <div class="progress-track"><div class="progress-fill" id="export-progress"></div></div>
+      <div id="export-status">Rendering… 0 / 0 iterations</div>
+      <button class="btn" id="btn-cancel-export">Cancel</button>
+    </div>
   </div>
 
   <script>
@@ -386,7 +471,8 @@
          4. Renderer    — palette LUT (linear RGB) for both render paths
          5. UI          — control panel wiring (sliders, presets, seed)
          6. GPU         — WebGL1 ping-pong FBO renderer, CPU fallback guard
-         7. Main loop   — requestAnimationFrame; GPU or CPU per capability
+         7. Export      — same-size PNG, chunked hi-res re-render, JSON copy
+         8. Main loop   — requestAnimationFrame; GPU or CPU per capability
        ============================================================ */
 
     /* ---------- 1. PRNG ---------- */
@@ -1258,7 +1344,169 @@
       return true;
     }
 
-    /* ---------- 7. Main loop ---------- */
+    /* ---------- 7. Export ---------- */
+    let loopSuspended = false;   // freezes sim+render during high-res export
+    let exporting = false;
+    let hiResCancel = false;
+
+    function exportBasename() {
+      return `organica_${params.seed}_f${params.f}_k${params.k}`;
+    }
+
+    function downloadBlob(blob, filename) {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    }
+
+    // Same-size capture: whatever the visible canvas shows right now.
+    $('btn-export').addEventListener('click', () => {
+      if (exporting) return;
+      canvas.toBlob((blob) => {
+        if (blob) downloadBlob(blob, exportBasename() + '.png');
+      }, 'image/png');
+    });
+
+    // High-res: re-run the same simulation from scratch at the target size on
+    // the CPU (GPU readback/upscaling would be lossy or pixelated), chunked
+    // through setTimeout so the UI stays responsive. The live simulation is
+    // suspended and fully restored afterwards.
+    function startHiResExport() {
+      if (exporting) return;
+      exporting = true;
+      loopSuspended = true;
+
+      const size = parseInt($('ctl-exsize').value, 10);
+      const iters = Math.min(frameCount, 5000); // cap per spec §10.2
+      const exParams = Object.assign({}, params);
+
+      // save live state — tick() swaps buffer references, so save all four
+      const savedU = U, savedV = V, savedUn = U_next, savedVn = V_next;
+      const savedW = W, savedH = H, savedFc = frameCount;
+
+      initGrid(size, size, exParams.seed, exParams.seedMode);
+
+      const modal = $('export-modal');
+      const fill = $('export-progress');
+      const status = $('export-status');
+      fill.style.width = '0%';
+      status.textContent = `Rendering… 0 / ${iters} iterations`;
+      modal.classList.add('visible');
+
+      const total = Math.max(1, iters);
+
+      function restore() {
+        U = savedU; V = savedV;
+        U_next = savedUn; V_next = savedVn;
+        W = savedW; H = savedH;
+        frameCount = savedFc;
+        imgData = null; // dimensions changed under it
+        modal.classList.remove('visible');
+        $('btn-hires').disabled = false;
+        exporting = false;
+        loopSuspended = false;
+      }
+
+      function finish() {
+        if (hiResCancel) { restore(); return; }
+        const out = document.createElement('canvas');
+        out.width = size;
+        out.height = size;
+        const octx = out.getContext('2d');
+        const im = octx.createImageData(size, size);
+        const d = im.data;
+        const key = params.palette + '|' + params.invert + '|' + params.colorBias;
+        if (key !== lutKey) buildColorLut();
+        for (let j = 3; j < d.length; j += 4) d[j] = 255;
+        for (let i = 0, j = 0; i < size * size; i++, j += 4) {
+          const idx = ((V[i] * 255) | 0) * 3;
+          d[j]     = colorLut[idx];
+          d[j + 1] = colorLut[idx + 1];
+          d[j + 2] = colorLut[idx + 2];
+        }
+        octx.putImageData(im, 0, 0);
+        out.toBlob((blob) => {
+          if (blob) downloadBlob(blob, exportBasename() + '.png');
+        }, 'image/png');
+        restore();
+      }
+
+      function chunk(start) {
+        if (hiResCancel) { restore(); return; }
+        const end = Math.min(start + 50, iters);
+        for (let i = start; i < end; i++) tick(exParams);
+        fill.style.width = Math.round(end / total * 100) + '%';
+        status.textContent = `Rendering… ${end} / ${iters} iterations`;
+        if (end < iters) setTimeout(() => chunk(end), 0);
+        else finish();
+      }
+
+      $('btn-hires').disabled = true;
+      if (iters > 0) setTimeout(() => chunk(0), 0);
+      else finish();
+    }
+
+    $('btn-hires').addEventListener('click', () => {
+      hiResCancel = false;
+      startHiResExport();
+    });
+
+    $('btn-cancel-export').addEventListener('click', () => {
+      hiResCancel = true;
+    });
+
+    function paramsJSON() {
+      return JSON.stringify({
+        generator: 'Gray-Scott Reaction-Diffusion Engine',
+        version: '1.0',
+        seed: params.seed,
+        seedMode: params.seedMode,
+        f: params.f,
+        k: params.k,
+        Du: params.Du,
+        Dv: params.Dv,
+        palette: params.palette,
+        invert: params.invert,
+        colorBias: params.colorBias,
+        iterationsAtExport: frameCount
+      }, null, 2);
+    }
+
+    function showTip(anchor, text) {
+      const tip = document.createElement('span');
+      tip.className = 'copy-tip';
+      tip.textContent = text;
+      anchor.style.position = 'relative';
+      anchor.appendChild(tip);
+      requestAnimationFrame(() => tip.classList.add('show'));
+      setTimeout(() => tip.remove(), 1300);
+    }
+
+    async function copyParamsJson(btn) {
+      const text = paramsJSON();
+      try {
+        await navigator.clipboard.writeText(text);
+        showTip(btn, 'Copied!');
+      } catch (e) {
+        // clipboard API unavailable (e.g. file:// non-secure context)
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        let ok = false;
+        try { ok = document.execCommand('copy'); } catch (e2) { ok = false; }
+        ta.remove();
+        showTip(btn, ok ? 'Copied!' : 'Copy failed');
+      }
+    }
+
+    $('btn-json').addEventListener('click', function() { copyParamsJson(this); });
+
+    /* ---------- 8. Main loop ---------- */
     const frameEl = $('frameCounter');
     const fpsEl = $('fpsCounter');
     let fpsFrames = 0;
@@ -1272,17 +1520,19 @@
     }, 1000);
 
     function frame() {
-      if (gpu.active) {
-        gpuEnsureSize();
-        gpuStep(params.stepsPerFrame);
-        gpuDisplay();
-      } else {
-        for (let s = 0; s < params.stepsPerFrame; s++) tick(params);
-        renderCPU();
+      if (!loopSuspended) {
+        if (gpu.active) {
+          gpuEnsureSize();
+          gpuStep(params.stepsPerFrame);
+          gpuDisplay();
+        } else {
+          for (let s = 0; s < params.stepsPerFrame; s++) tick(params);
+          renderCPU();
+        }
+        frameCount++;
+        fpsFrames++;
+        frameEl.textContent = 'Frame: ' + frameCount;
       }
-      frameCount++;
-      fpsFrames++;
-      frameEl.textContent = 'Frame: ' + frameCount;
       requestAnimationFrame(frame);
     }
 
