@@ -866,6 +866,7 @@
     let canvas = document.getElementById('sim');
     let ctx2d = null;
     let imgData = null;
+    let colorLut = new Uint8Array(256 * 3);
 
     function cpuCtx() {
       if (!ctx2d) ctx2d = canvas.getContext('2d');
@@ -1509,7 +1510,7 @@ function renderCPU() {
       const gl = gpu.gl;
       // compare against live params (module lutKey may be stale in GPU mode,
       // where the CPU blit never runs)
-      const key = params.palette + '|' + params.invert + '|' + params.colorBias;
+      const key = params.palette + '|' + params.invert + '|' + params.colorBias + '|' + params.vibrance;
       if (key !== gpu.lutKeyGPU) {
         buildColorLut();
         gpuUploadLut();
