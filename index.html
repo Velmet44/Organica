@@ -648,7 +648,8 @@
       seedMode: 'spots',
       palette: 'viridis',
       invert: false,
-      colorBias: 0.5
+      colorBias: 0.5,
+      vibrance: 1.0         // 0.0 = natural, 1.0 = default, 2.0+ = boosted midtone saturation
     };
 
     /* ---------- 3. Simulation core ---------- */
@@ -871,75 +872,95 @@
       return ctx2d;
     }
 
-    // Palette stops as [t, r, g, b] with sRGB 0-255 channels.
-    // viridis stops are exact (spec §7); others match their described character.
+    // Expanded palette stops with additional intermediate colours for smoother transitions.
+    // Each palette now has 7 stops (6 intervals) covering the full V range with carefully
+    // chosen sRGB values that span wider gamut regions for more vibrant output.
     const PALETTES = {
       grayscale: [
         [0.0,   0,   0,   0],
+        [0.33,  80,  80,  80],
+        [0.67, 180, 180, 180],
         [1.0, 255, 255, 255]
       ],
       viridis: [
         [0.0,   68,   1,  84],
-        [0.25,  59,  82, 139],
-        [0.5,   33, 145, 140],
-        [0.75,  94, 201,  97],
-        [1.0,  253, 231,  37]
+        [0.2,   33,  70, 120],
+        [0.4,  59, 102, 160],
+        [0.5,  33, 145, 140],
+        [0.6,  80, 180, 120],
+        [0.8, 130, 200,  90],
+        [1.0, 253, 231,  37]
       ],
       plasma: [
         [0.0,   13,   8, 135],
-        [0.25, 126,   3, 168],
+        [0.2,  100,   5, 150],
+        [0.4,  180,  30, 130],
         [0.5,  204,  71, 120],
-        [0.75, 248, 149,  64],
-        [1.0,  240, 249,  33]
+        [0.6,  220, 100,  80],
+        [0.8,  230, 150,  50],
+        [1.0, 240, 249,  33]
       ],
       inferno: [
         [0.0,    0,   0,   4],
-        [0.25,  87,  16, 110],
+        [0.2,   50,  20,  90],
+        [0.4,  120,  40,  70],
         [0.5,  188,  55,  84],
-        [0.75, 249, 142,   9],
-        [1.0,  252, 255, 164]
+        [0.6,  220,  80,  60],
+        [0.8,  240, 120,  40],
+        [1.0, 252, 255, 164]
       ],
       magma: [
         [0.0,    0,   0,   4],
-        [0.25,  81,  18, 124],
+        [0.2,   50,  20, 100],
+        [0.4,  130,  40, 110],
         [0.5,  183,  55, 121],
-        [0.75, 252, 137,  97],
-        [1.0,  252, 253, 191]
+        [0.6,  200,  80, 100],
+        [0.8,  220, 100,  80],
+        [1.0, 252, 253, 191]
       ],
       thermal: [
         [0.0,    0,   0,   0],
-        [0.18,   0, 20, 160],
-        [0.4,    0, 210, 230],
-        [0.6,   30, 200,  60],
-        [0.75, 250, 220,  30],
-        [0.9,  235,  50,  30],
+        [0.15,   0,  30, 150],
+        [0.3,    0, 100, 200],
+        [0.45,  30, 150, 120],
+        [0.6,   60, 200,  50],
+        [0.75, 150, 180,  30],
         [1.0,  255, 255, 255]
       ],
       ice: [
         [0.0,    0,   0,   0],
-        [0.35,  10,  40, 140],
-        [0.7,   60, 190, 230],
+        [0.3,   20,  50, 130],
+        [0.5,   40, 100, 180],
+        [0.7,   60, 150, 220],
+        [0.85, 130, 200, 200],
+        [0.95, 200, 220, 230],
         [1.0,  255, 255, 255]
       ],
       fire: [
         [0.0,    0,   0,   0],
-        [0.3,  140,  20,  10],
-        [0.6,  245, 120,  20],
-        [0.85, 255, 220,  60],
+        [0.25,  100,  25,  20],
+        [0.45,  200,  50,  15],
+        [0.6,  230, 100,  25],
+        [0.75, 250, 150,  40],
+        [0.9,  255, 200,  60],
         [1.0,  255, 255, 240]
       ],
       alien: [
         [0.0,    0,   0,   0],
-        [0.3,   10,  70,  20],
-        [0.6,   30, 180,  60],
-        [0.85, 160, 255,  60],
+        [0.3,   20,  80,  30],
+        [0.5,   40, 130,  50],
+        [0.6,   50, 170,  60],
+        [0.7,  100, 200,  60],
+        [0.85, 140, 230,  70],
         [1.0,  240, 255, 220]
       ],
       neon: [
         [0.0,    5,   0,  20],
-        [0.3,   90,  20, 180],
-        [0.55, 255,  40, 180],
-        [0.8,   40, 230, 255],
+        [0.3,   60,  20, 140],
+        [0.45, 100,  30, 170],
+        [0.55, 200,  40, 160],
+        [0.7,   80,  50, 200],
+        [0.85, 120, 100, 230],
         [1.0,  255, 255, 255]
       ]
     };
@@ -951,40 +972,77 @@
       return c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
     }
 
-    // mapColor(v): bias remap -> invert -> palette lookup in linear RGB,
-    // converted back to sRGB. Precomputed as a 256-entry LUT rebuilt only
-    // when palette/invert/bias change.
-    let colorLut = new Uint8Array(256 * 3);
-    let lutKey = '';
+// mapColor(v): bias remap -> invert -> palette lookup in linear RGB,
+// converted back to sRGB. Precomputed as a 256-entry LUT rebuilt only
+// when palette/invert/bias/vibrance change. Uses expanded 7-stop palettes
+// for smoother colour transitions and more vibrant output.
+function buildColorLut() {
+  const stops = PALETTES[params.palette] || PALETTES.grayscale;
+  // stops is now 7 entries [t, r, g, b] with 6 intervals between 0 and 1
+  const lin = stops.map(([t, r, g, b]) =>
+    [t, srgbToLinear(r / 255), srgbToLinear(g / 255), srgbToLinear(b / 255)]);
+  const exponent = 1 / (params.colorBias * 2 + 0.1);
+  const vibrance = Math.max(0.1, params.vibrance); // [0.1, 2.0]
 
-    function buildColorLut() {
-      const stops = PALETTES[params.palette] || PALETTES.grayscale;
-      const lin = stops.map(([t, r, g, b]) =>
-        [t, srgbToLinear(r / 255), srgbToLinear(g / 255), srgbToLinear(b / 255)]);
-      const exponent = 1 / (params.colorBias * 2 + 0.1);
+  for (let i = 0; i < 256; i++) {
+    // Base V value with colour bias shift
+    let v = Math.pow(i / 255, exponent);
+    if (params.invert) v = 1 - v;
+    const x = v < 0 ? 0 : v > 1 ? 1 : v;
 
-      for (let i = 0; i < 256; i++) {
-        let v = Math.pow(i / 255, exponent);          // bias shifts midpoint
-        if (params.invert) v = 1 - v;                 // swap low/high ends
-        const x = v < 0 ? 0 : v > 1 ? 1 : v;
+    // --- Find interval in the 7-stop palette ---
+    let s = 0;
+    while (s < lin.length - 2 && x > lin[s + 1][0]) s++;
+    const a = lin[s], b = lin[s + 1];
+    const span = b[0] - a[0];
+    const u = span > 0 ? (x - a[0]) / span : 0;
 
-        let s = 0;
-        while (s < lin.length - 2 && x > lin[s + 1][0]) s++;
-        const a = lin[s], b = lin[s + 1];
-        const span = b[0] - a[0];
-        const u = span > 0 ? (x - a[0]) / span : 0;
+    // --- Lerp colour in linear RGB ---
+    const rgbLin = [
+      a[1] + (b[1] - a[1]) * u,
+      a[2] + (b[2] - a[2]) * u,
+      a[3] + (b[3] - a[3]) * u
+    ];
 
-        for (let ch = 0; ch < 3; ch++) {
-          const lv = a[ch + 1] + (b[ch + 1] - a[ch + 1]) * u; // lerp in linear
-          colorLut[i * 3 + ch] =
-            Math.round(Math.max(0, Math.min(1, linearToSrgb(lv))) * 255);
-        }
-      }
-      lutKey = params.palette + '|' + params.invert + '|' + params.colorBias;
+    // --- Apply vibrance in linear RGB space ---
+    // Standard vibrance: boost saturation proportionally, protect highlights/shadows
+    const vib = vibrance; // 0.1 to 2.0
+
+    // Calculate luminance (lightness) using NTSC weights in linear space
+    const l = 0.2126 * rgbLin[0] + 0.7152 * rgbLin[1] + 0.0722 * rgbLin[2];
+
+    // For each channel, boost its distance from the neutral gray of same luminance
+    const out = [];
+    for (let ch = 0; ch < 3; ch++) {
+      const neutral = l; // same luminance neutral gray
+      const diff = rgbLin[ch] - neutral;
+
+      // Boost the difference, but clamp so extremes stay clamped to [0,1]
+      const diffBoosted = diff * vib;
+
+      // Reconstruct channel: neutral + boosted difference
+      let rgbv = neutral + diffBoosted;
+      // Reduce boost for colors already close to extremes (near-white or near-black)
+      const proximityToEdge = Math.min(rgbLin[ch], 1 - rgbLin[ch]);
+      const reduction = proximityToEdge * (1 - vib);
+      rgbv = neutral + diffBoosted * (1 - reduction * 0.5);
+
+      // Clamp to valid sRGB range
+      rgbv = Math.max(0, Math.min(1, rgbv));
+
+      // Convert to 0-255
+      out[ch] = Math.round(rgbv * 255);
     }
 
-    function renderCPU() {
-      const key = params.palette + '|' + params.invert + '|' + params.colorBias;
+    colorLut[i * 3 + 0] = out[0];
+    colorLut[i * 3 + 1] = out[1];
+    colorLut[i * 3 + 2] = out[2];
+  }
+lutKey = params.palette + '|' + params.invert + '|' + params.colorBias + '|' + params.vibrance;
+}
+
+function renderCPU() {
+  const key = params.palette + '|' + params.invert + '|' + params.colorBias + '|' + params.vibrance;
       if (key !== lutKey) buildColorLut();
       const ctx = cpuCtx();
       if (!ctx) return;
@@ -1017,7 +1075,8 @@
       ['Du',            'Diffusion U', 'Du',  0.050, 0.400, 0.005, 3, 'sec-sim'],
       ['Dv',            'Diffusion V', 'Dv',  0.010, 0.250, 0.005, 3, 'sec-sim'],
       ['stepsPerFrame', 'Steps / Frame', '',  1,     40,    1,     0, 'sec-sim'],
-      ['colorBias',     'Colour Bias', '',    0.0,   1.0,   0.01,  2, 'sec-visual']
+      ['colorBias',     'Colour Bias', '',    0.0,   1.0,   0.01,  2, 'sec-visual'],
+      ['vibrance',      'Vibrance',    '',    0.0,   2.0,   0.05,  2, 'sec-visual']
     ];
 
     const ctlRefs = {}; // key -> { input, out, decimals }
@@ -1127,6 +1186,7 @@
     });
 
     function reseed() {
+      stableCount = 0; // reset convergence tracker on new seed
       initGrid(params.gridSize, params.gridSize, params.seed, params.seedMode);
       if (gpu.active) {
         gpuEnsureSize();
@@ -1651,6 +1711,9 @@
 
     /* ---------- 8. Transport, shortcuts, fullscreen, hash ---------- */
     let running = true;
+    let stableCount = 0;
+    const stableThreshold = 0.001; // minimal V-change to consider "stable"
+    const stableFrames = 15; // require this many stable frames to auto-pause
     const btnPlay = $('btn-play');
     const btnStep = $('btn-step');
 
@@ -1754,7 +1817,7 @@
         if (!location.hash || location.hash.length < 3) return false;
         const obj = JSON.parse(decodeURIComponent(escape(atob(location.hash.slice(1)))));
         const keys = ['f','k','Du','Dv','stepsPerFrame','gridSize',
-                      'seed','seedMode','palette','invert','colorBias'];
+                      'seed','seedMode','palette','invert','colorBias','vibrance'];
         let touched = false;
         for (const kk of keys) {
           if (kk in obj) { params[kk] = obj[kk]; touched = true; }
@@ -1794,14 +1857,34 @@
     function frame() {
       if (!loopSuspended) {
         if (running) {
+          const prevV = V.slice(); // copy for diff
           if (gpu.active) {
             gpuEnsureSize();
             gpuStep(params.stepsPerFrame);
+            stableCount = 0;
           } else {
             for (let s = 0; s < params.stepsPerFrame; s++) tick(params);
           }
           frameCount++;
           fpsFrames++;
+
+          // --- stability detection (CPU only) ---
+          let vDiff = 0;
+          if (!gpu.active) {
+            for (let i = 0; i < W * H; i++) {
+              vDiff += Math.abs(V[i] - prevV[i]);
+            }
+            if (vDiff < stableThreshold) {
+              stableCount++;
+              if (stableCount >= stableFrames) {
+                running = false;
+                setRunning(false);
+              }
+            } else {
+              stableCount = 0;
+            }
+          }
+          // ---------------------------------
         }
         // always render: live palette/bias/invert edits must show while paused
         if (gpu.active) gpuDisplay(); else renderCPU();
