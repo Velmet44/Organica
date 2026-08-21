@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: organica
+    env: static
+    staticPublishPath: .
+    buildCommand: ""
+    pullRequestPreviewsEnabled: false

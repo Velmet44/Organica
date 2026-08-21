@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Organica — a browser-based Gray-Scott reaction-diffusion pattern engine. Tune parameters in real time and export print-quality PNGs.">
+  <title>Organica — Reaction-Diffusion Engine</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --panel-bg: #111118;
+      --border: #2a2a3a;
+      --text: #c8c8d8;
+      --accent: #6e8efb;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      overflow: hidden;
+    }
+
+    /* TODO: Stage 8 — responsive layout (panel below canvas under 768px) */
+
+    #topbar {
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    #topbar h1 {
+      font-size: 15px;
+      font-weight: 500;
+      letter-spacing: 0.5px;
+    }
+
+    #main {
+      display: flex;
+      height: calc(100vh - 44px);
+    }
+
+    /* Canvas area */
+    #canvas-area {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      min-width: 0;
+      position: relative;
+    }
+
+    #sim {
+      border: 2px solid var(--border);
+      box-shadow: 0 0 30px rgba(110, 142, 251, 0.15);
+      image-rendering: pixelated;
+      max-width: 100%;
+      max-height: 100%;
+      aspect-ratio: 1 / 1;
+    }
+
+    /* Control panel */
+    #panel {
+      width: 300px;
+      flex-shrink: 0;
+      background: var(--panel-bg);
+      border-left: 1px solid var(--border);
+      overflow-y: auto;
+      padding: 14px;
+    }
+
+    /* TODO: Stage 3 — control panel controls */
+    /* TODO: Stage 4 — preset buttons row */
+    /* TODO: Stage 7 — export buttons + progress modal */
+    /* TODO: Stage 8 — keyboard shortcut legend, fullscreen button, About tooltip */
+  </style>
+</head>
+<body>
+  <!-- TODO: Stage 8 — About [?] tooltip, fullscreen button -->
+  <header id="topbar">
+    <h1>🧬 Reaction-Diffusion Engine</h1>
+    <div id="topbar-actions"></div>
+  </header>
+
+  <div id="main">
+    <div id="canvas-area">
+      <!-- TODO: Stage 2 — simulation render target -->
+      <canvas id="sim"></canvas>
+      <!-- TODO: Stage 3 — frame counter overlay (bottom-left) -->
+      <!-- TODO: Stage 3 — FPS counter overlay (bottom-right) -->
+    </div>
+
+    <aside id="panel">
+      <!-- TODO: Stage 4 — preset buttons row -->
+      <!-- TODO: Stage 3 — simulation parameter sliders (f, k, Du, Dv, stepsPerFrame) -->
+      <!-- TODO: Stage 5 — visual parameters (palette, invert, colorBias) -->
+      <!-- TODO: Stage 2/3 — initialisation parameters (seedMode, seed, gridSize) -->
+      <!-- TODO: Stage 3 — Reset/Reseed button -->
+      <!-- TODO: Stage 7 — export section -->
+      <!-- TODO: Stage 8 — shortcuts legend footer -->
+    </aside>
+  </div>
+
+  <!-- TODO: Stage 6 — WebGL renderer + CPU fallback guard -->
+  <script>
+  </script>
+</body>
+</html>
