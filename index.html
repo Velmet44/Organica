@@ -1492,12 +1492,13 @@ function buildColorLut() {
       }
       const d = imgData.data;
       const doStab = doStability;
-      let vDiff = 0;
+      let changed = 0;
       for (let i = 0, j = 0; i < W * H; i++, j += 4) {
         cellColor(i, d, j);
         if (doStab) {
-          const dv = V[i] - stabilityPrev[i];
-          vDiff += dv < 0 ? -dv : dv;
+          let dv = V[i] - stabilityPrev[i];
+          if (dv < 0) dv = -dv;
+          if (dv >= VIS_BIN) changed++;
           stabilityPrev[i] = V[i];
         }
       }
@@ -1506,8 +1507,7 @@ function buildColorLut() {
       // Stability auto-stop (folded in here so we pay only one full-grid pass).
       if (doStab) {
         doStability = false;
-        const avgChange = vDiff / (W * H);
-        if (avgChange < stableThreshold) {
+        if (changed <= W * H * STABLE_VIS_FRAC) {
           stableCount++;
           if (stableCount >= stableFrames) {
             running = false;
@@ -2482,8 +2482,9 @@ function buildColorLut() {
 
     // Convergence check for the GPU path: reads the latest V back from the
     // current ping-pong target and compares it against the previous snapshot.
-    // Mirrors the CPU inline check (avg |ΔV| < stableThreshold for stableFrames
-    // consecutive checks) so the GPU sim also auto-stops with a "Done" status.
+    // Mirrors the CPU inline check: counts cells whose V changed by at least
+    // one LUT bin (VIS_BIN); when that's below STABLE_VIS_FRAC for stableFrames
+    // consecutive checks the GPU sim also auto-stops with a "Done" status.
     function gpuCheckStability() {
       const gl = gpu.gl;
       if (!gl || !gpu.size) return;
@@ -2496,14 +2497,14 @@ function buildColorLut() {
         gl.readPixels(0, 0, W, H, gl.RGBA, gl.FLOAT, buf);
       const S = gpu.scale;
       if (gpuLastV) {
-        let sum = 0;
+        let changed = 0;
         for (let i = 0, j = 0; i < n; i++, j += 4) {
           const v = gpu.mode === 'int' ? buf[j + 1] / S : buf[j + 1];
           let d = v - gpuLastV[i];
           if (d < 0) d = -d;
-          sum += d;
+          if (d >= VIS_BIN) changed++;
         }
-        if (sum / n < stableThreshold) {
+        if (changed <= n * STABLE_VIS_FRAC) {
           stableCount++;
           if (stableCount >= stableFrames) {
             running = false;
@@ -2895,9 +2896,13 @@ function buildColorLut() {
     let stableCount = 0;
     let gpuLastV = null; // previous GPU V snapshot for stability diff
     let gpuStabCounter = 0; // throttles the GPU readback stability check
-    // Average per-cell V change below this (after stableFrames consecutive
-    // frames) is treated as "converged" → auto-stop with status "Done".
-    const stableThreshold = 1e-5;
+    // A cell is treated as "still evolving" only if its V changes by at least
+    // one LUT bin (1/255) between frames — smaller shifts cannot alter the
+    // rendered colour, so they must not keep the sim running. When fewer than
+    // STABLE_VIS_FRAC of cells move that much for stableFrames consecutive
+    // frames the pattern is visually static → auto-stop with status "Done".
+    const VIS_BIN = 1 / 255;
+    const STABLE_VIS_FRAC = 0.0003;
     const stableFrames = 15;
     const btnPlay = $('btn-play');
     const btnStep = $('btn-step');

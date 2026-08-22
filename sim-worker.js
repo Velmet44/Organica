@@ -16,7 +16,9 @@
     seedColorDiff: 1.0, seedColorDiffusion: 0.08, seedColorOffset: 0.0,
     seedColorBrightness: 0.0, seedPalette: 'viridis'
   };
-  var stableThreshold = 1e-5, stableFrames = 15;
+  var stableFrames = 15;
+  var VIS_BIN = 1 / 255;        // a V shift smaller than one LUT bin cannot change the rendered colour
+  var STABLE_VIS_FRAC = 0.0003; // allow up to 0.03% of cells to flicker without counting as "still evolving"
   var SEED_U = 0.5, SEED_V = 0.25;
 
   function mulberry32(seed) {
@@ -245,21 +247,22 @@
     for (var s = 0; s < steps; s++) tick(params);
     frameCount++;
     if (!stabilityPrev || stabilityPrev.length !== W * H) stabilityPrev = new Float32Array(W * H);
-    var vd = 0;
+    var changed = 0;
     for (var i = 0; i < W * H; i++) {
       var d = V[i] - stabilityPrev[i];
-      vd += d < 0 ? -d : d;
+      if (d < 0) d = -d;
+      if (d >= VIS_BIN) changed++;
       stabilityPrev[i] = V[i];
     }
-    var avg = vd / (W * H);
-    if (avg < stableThreshold) { stableCount++; if (stableCount >= stableFrames) { running = false; } }
+    var n = W * H;
+    if (changed <= n * STABLE_VIS_FRAC) { stableCount++; if (stableCount >= stableFrames) { running = false; } }
     else { stableCount = 0; }
     postFrame();
     if (running) setTimeout(loop, 0);
   }
   self.onmessage = function (e) {
     var m = e.data;
-    if (m.cmd === 'init') { params = m.params; initGrid(m.size, m.size, m.seed, m.mode); running = false; postFrame(); }
+    if (m.cmd === 'init') { params = m.params; initGrid(m.size, m.size, m.seed, m.mode); running = false; stableCount = 0; stabilityPrev = null; postFrame(); }
     else if (m.cmd === 'setParams') { for (var kk in m.params) params[kk] = m.params[kk]; }
     else if (m.cmd === 'setRunning') { running = m.running; if (running) loop(); else postFrame(); }
     else if (m.cmd === 'step') { tick(params); frameCount++; postFrame(); }
