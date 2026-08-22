@@ -2502,9 +2502,9 @@ function buildColorLut() {
           const v = gpu.mode === 'int' ? buf[j + 1] / S : buf[j + 1];
           let d = v - gpuLastV[i];
           if (d < 0) d = -d;
-          if (d >= VIS_BIN) changed++;
+          if (d >= GPU_VIS_BIN) changed++;
         }
-        if (changed <= n * STABLE_VIS_FRAC) {
+        if (changed <= n * GPU_STABLE_VIS_FRAC) {
           stableCount++;
           if (stableCount >= stableFrames) {
             running = false;
@@ -2903,6 +2903,12 @@ function buildColorLut() {
     const VIS_BIN = 1 / 255;
     const STABLE_VIS_FRAC = 0.0003;
     const stableFrames = 15;
+    // GPU (float) path carries a longer, sub-perceptual tail than the CPU
+    // float path, so its detector is a little more lenient: a shift must clear
+    // ~2 LUT bins (an actually visible colour step) and up to ~0.06% of cells
+    // may keep drifting without resetting the convergence count.
+    const GPU_VIS_BIN = VIS_BIN * 2;
+    const GPU_STABLE_VIS_FRAC = STABLE_VIS_FRAC * 2;
     const btnPlay = $('btn-play');
     const btnStep = $('btn-step');
     const simStatusEl = $('sim-status');
