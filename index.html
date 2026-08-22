@@ -2245,6 +2245,46 @@ function buildColorLut() {
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }
 
+    // Convergence check for the GPU path: reads the latest V back from the
+    // current ping-pong target and compares it against the previous snapshot.
+    // Mirrors the CPU inline check (avg |ΔV| < stableThreshold for stableFrames
+    // consecutive checks) so the GPU sim also auto-stops with a "Done" status.
+    function gpuCheckStability() {
+      const gl = gpu.gl;
+      if (!gl || !gpu.size) return;
+      const n = W * H;
+      const buf = gpu.mode === 'int' ? new Int32Array(n * 4) : new Float32Array(n * 4);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, gpu.fbo[gpu.read]);
+      if (gpu.mode === 'int')
+        gl.readPixels(0, 0, W, H, gl.RGBA_INTEGER, gl.INT, buf);
+      else
+        gl.readPixels(0, 0, W, H, gl.RGBA, gl.FLOAT, buf);
+      const S = gpu.scale;
+      if (gpuLastV) {
+        let sum = 0;
+        for (let i = 0, j = 0; i < n; i++, j += 4) {
+          const v = gpu.mode === 'int' ? buf[j + 1] / S : buf[j + 1];
+          let d = v - gpuLastV[i];
+          if (d < 0) d = -d;
+          sum += d;
+        }
+        if (sum / n < stableThreshold) {
+          stableCount++;
+          if (stableCount >= stableFrames) {
+            running = false;
+            setSimState('done');
+          }
+        } else {
+          stableCount = 0;
+        }
+      }
+      const cur = new Float32Array(n);
+      for (let i = 0, j = 0; i < n; i++, j += 4) {
+        cur[i] = gpu.mode === 'int' ? buf[j + 1] / S : buf[j + 1];
+      }
+      gpuLastV = cur;
+    }
+
 
      /* ---------- 7. Export ---------- */
     let loopSuspended = false;   // freezes sim+render during high-res export
@@ -2436,6 +2476,7 @@ function buildColorLut() {
     let simState = 'idle'; // 'idle' | 'running' | 'paused' | 'done'
     let stableCount = 0;
     let gpuLastV = null; // previous GPU V snapshot for stability diff
+    let gpuStabCounter = 0; // throttles the GPU readback stability check
     // Average per-cell V change below this (after stableFrames consecutive
     // frames) is treated as "converged" → auto-stop with status "Done".
     const stableThreshold = 1e-5;
@@ -2706,6 +2747,7 @@ function buildColorLut() {
           gpuStep(params.stepsPerFrame);
           frameCount += params.stepsPerFrame;
           fpsFrames++;
+          if (++gpuStabCounter % 4 === 0) gpuCheckStability();
         } else if (running && !sim.useWorker) {
           for (let s = 0; s < params.stepsPerFrame; s++) tick(params);
           frameCount++;
