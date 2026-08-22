@@ -106,7 +106,9 @@ Each preset also sets a matching seed pattern and colour palette; clicking one r
 ## Export
 
 - **📷 Export PNG** — saves exactly what the canvas shows right now, named `organica_<seed>_f<f>_k<k>.png` (or your custom filename).
-- **High-Res Render…** — re-runs the *same simulation from scratch* off-screen at up to 4096×4096 using the CPU path (re-simulation is deterministic, not upscaling), capped at 5000 iterations, with a progress modal and Cancel button. The live session is suspended and fully restored afterwards.
+- **High-Res Render…** — re-runs the *exact finished simulation* off-screen at up to 4096×4096 using the CPU path (re-simulation is deterministic, not upscaling), for the same number of ticks the live run took, then saves the final frame as a PNG. A progress modal and Cancel button are shown, and the live session is suspended and fully restored afterwards.
+- **Export Video…** — records a 60 fps WebM of the finished formation by replaying the simulation on the CPU and capturing each displayed frame. A dialog lets you choose resolution (256–1024), filename, and speed (0.5×–4×). Output is a `.webm` video.
+- **Export gating** — both High-Res Render and Export Video require the simulation to have finished (status **Done**). Clicking either before completion shows a notice instead of exporting.
 - **Copy Parameters JSON** — puts a full JSON object (seed, seed mode, grid size, steps/frame, f/k/Du/Dv, palette, invert, bias, vibrance, coloured-seed settings, GPU flag) on the clipboard for reproducing a look elsewhere. Paste it back via **Import Parameters JSON**.
 - **Import Parameters JSON** — opens a dialog where you can paste a parameters JSON (e.g. from *Copy Parameters JSON*); recognised fields are applied, the UI and backend sync, and the simulation reseeds. Unknown or invalid fields are ignored with an inline error.
 

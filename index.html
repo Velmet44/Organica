@@ -396,7 +396,7 @@
     #info-tip.visible { display: block; }
 
     /* Import-parameters modal */
-    #import-modal {
+    #import-modal, #video-modal {
       position: fixed;
       inset: 0;
       background: rgba(5, 5, 10, 0.75);
@@ -405,7 +405,7 @@
       justify-content: center;
       z-index: 120;
     }
-    #import-modal.visible { display: flex; }
+    #import-modal.visible, #video-modal.visible { display: flex; }
     #import-text {
       width: 100%;
       height: 160px;
@@ -430,6 +430,24 @@
       display: flex;
       gap: 8px;
       justify-content: flex-end;
+    }
+    .modal-field { margin-bottom: 12px; }
+    .modal-field label {
+      display: block;
+      font-size: 12px;
+      color: #8888a0;
+      margin-bottom: 4px;
+    }
+    #video-modal select, #video-modal input[type="text"] {
+      width: 100%;
+      background: #12121a;
+      color: #d0d0e0;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      box-sizing: border-box;
     }
 
     /* Keyboard shortcut legend */
@@ -708,6 +726,7 @@
           </select>
         </div>
         <button class="btn" id="btn-hires" style="margin-bottom:8px">High-Res Render…</button>
+        <button class="btn" id="btn-video" style="margin-bottom:8px">Export Video…</button>
         <button class="btn" id="btn-json">Copy Parameters JSON</button>
         <button class="btn" id="btn-import">Import Parameters JSON</button>
       </section>
@@ -771,6 +790,45 @@
       <div class="modal-actions">
         <button class="btn" id="btn-import-cancel">Cancel</button>
         <button class="btn btn-filled" id="btn-import-apply">Import</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="video-modal">
+    <div class="modal-box">
+      <button class="about-close" id="btn-video-close">✕</button>
+      <h3>Export Video</h3>
+      <p style="font-size:12px; color:#aaa; margin-bottom:12px;">
+        Records a 60&nbsp;fps WebM of the finished formation. Available once the
+        simulation has run to completion (status <em>Done</em>).
+      </p>
+      <div class="modal-field">
+        <label for="ctl-vsize">Resolution</label>
+        <select id="ctl-vsize">
+          <option value="256">256 × 256</option>
+          <option value="384">384 × 384</option>
+          <option value="512" selected>512 × 512</option>
+          <option value="768">768 × 768</option>
+          <option value="1024">1024 × 1024</option>
+        </select>
+      </div>
+      <div class="modal-field">
+        <label for="ctl-vname">Filename</label>
+        <input type="text" id="ctl-vname" spellcheck="false" autocomplete="off" placeholder="organica_&lt;seed&gt;_f&lt;f&gt;_k&lt;k&gt;">
+      </div>
+      <div class="modal-field">
+        <label for="ctl-vspeed">Speed</label>
+        <select id="ctl-vspeed">
+          <option value="0.5">0.5× (slow)</option>
+          <option value="1" selected>1× (real time)</option>
+          <option value="2">2×</option>
+          <option value="4">4×</option>
+        </select>
+      </div>
+      <div class="import-error" id="video-error"></div>
+      <div class="modal-actions">
+        <button class="btn" id="btn-video-cancel">Cancel</button>
+        <button class="btn btn-filled" id="btn-video-apply">Export</button>
       </div>
     </div>
   </div>
@@ -2466,7 +2524,8 @@ function buildColorLut() {
      /* ---------- 7. Export ---------- */
     let loopSuspended = false;   // freezes sim+render during high-res export
     let exporting = false;
-    let hiResCancel = false;
+    let exportCancel = false;
+    let videoRecorder = null;
 
     function exportBasename() {
       return `organica_${params.seed}_f${params.f}_k${params.k}`;
@@ -2497,101 +2556,226 @@ function buildColorLut() {
       }, 'image/png');
     });
 
-    // High-res: re-run the same simulation from scratch at the target size on
-    // the CPU (GPU readback/upscaling would be lossy or pixelated), chunked
-    // through setTimeout so the UI stays responsive. The live simulation is
-    // suspended and fully restored afterwards.
-    function startHiResExport() {
-      if (exporting) return;
-      exporting = true;
-      loopSuspended = true;
-      const wasRunning = (simState === 'running');
-      ignoreWorkerFrames = true;       // drop any frames the (paused) worker emits
-      if (sim.useWorker) simSetRunning(false);
+    // High-res and video both replay the finished formation, so they only make
+    // sense once the live run has converged (status "Done").
+    function canExport() { return simState === 'done'; }
+    function warnNeedDone() {
+      showNotice('Run to completion first',
+        'Start the simulation and let it finish — wait for the "Done" status — before exporting a high-res image or video. This captures the exact formation you see.');
+    }
 
-      const exParams = Object.assign({}, params);
-      const size = parseInt($('ctl-exsize').value, 10);
-      // Match the visible sim: it runs stepsPerFrame ticks per displayed frame.
-      const iters = Math.min(frameCount * exParams.stepsPerFrame, 5000); // cap per spec §10.2
+    function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-      // save live state — tick() swaps buffer references, so save all of them
-      const savedU = U, savedV = V, savedUn = U_next, savedVn = V_next;
-      const savedC = C, savedCn = C_next;
-      const savedW = W, savedH = H, savedFc = frameCount;
-
-      initGrid(size, size, exParams.seed, exParams.seedMode);
-
-      const modal = $('export-modal');
+    function showExportModal(statusText) {
       const fill = $('export-progress');
       const status = $('export-status');
       fill.style.width = '0%';
-      status.textContent = `Rendering… 0 / ${iters} iterations`;
-      modal.classList.add('visible');
+      status.textContent = statusText;
+      $('export-modal').classList.add('visible');
+    }
+    function setExportProgress(pct, statusText) {
+      $('export-progress').style.width = pct + '%';
+      $('export-status').textContent = statusText;
+    }
+    function hideExportModal() { $('export-modal').classList.remove('visible'); }
 
-      const total = Math.max(1, iters);
-
-      function restore() {
-        U = savedU; V = savedV;
-        U_next = savedUn; V_next = savedVn;
-        C = savedC; C_next = savedCn;
-        W = savedW; H = savedH;
-        frameCount = savedFc;
-        imgData = null; // dimensions changed under it
-        modal.classList.remove('visible');
-        $('btn-hires').disabled = false;
-        exporting = false;
-        loopSuspended = false;
-        ignoreWorkerFrames = false;
-        if (sim.useWorker && wasRunning) simSetRunning(true);
-      }
-
-      function finish() {
-        if (hiResCancel) { restore(); return; }
-        const key = params.palette + '|' + params.invert + '|' + params.colorBias + '|' + params.vibrance;
-        if (key !== lutKey) buildColorLut();
-        const sKey = params.seedPalette + '|' + params.invert;
-        if (params.coloredSeeds && sKey !== seedLutKey) buildSeedColorLut();
-        const out = document.createElement('canvas');
-        out.width = size;
-        out.height = size;
-        const octx = out.getContext('2d');
-        const im = octx.createImageData(size, size);
-        const d = im.data;
-        for (let j = 3; j < d.length; j += 4) d[j] = 255;
-        for (let i = 0, j = 0; i < size * size; i++, j += 4) {
-          cellColor(i, d, j);
-        }
-        octx.putImageData(im, 0, 0);
-        out.toBlob((blob) => {
-          if (blob) downloadBlob(blob, exportName() + '.png');
-        }, 'image/png');
-        restore();
-      }
-
-      function chunk(start) {
-        if (hiResCancel) { restore(); return; }
-        const end = Math.min(start + 50, iters);
-        for (let i = start; i < end; i++) {
-          tick(exParams);
-        }
-        fill.style.width = Math.round(end / total * 100) + '%';
-        status.textContent = `Rendering… ${end} / ${iters} iterations`;
-        if (end < iters) setTimeout(() => chunk(end), 0);
-        else finish();
-      }
-
-      $('btn-hires').disabled = true;
-      if (iters > 0) setTimeout(() => chunk(0), 0);
-      else finish();
+    // Rebuild colour LUTs to match current params before an off-screen render.
+    function ensureLuts() {
+      const key = params.palette + '|' + params.invert + '|' + params.colorBias + '|' + params.vibrance;
+      if (key !== lutKey) buildColorLut();
+      const sKey = params.seedPalette + '|' + params.invert;
+      if (params.coloredSeeds && sKey !== seedLutKey) buildSeedColorLut();
     }
 
-    $('btn-hires').addEventListener('click', () => {
-      hiResCancel = false;
-      startHiResExport();
-    });
+    // Re-runs the Gray-Scott simulation on the CPU at `size` for `totalTicks`
+    // ticks, calling perFrame(displayFrame) after each displayed block of
+    // stepsPerFrame ticks. Yields to the event loop so the UI stays responsive
+    // and exports remain cancelable. Returns false if cancelled.
+    async function runSimAsync(size, totalTicks, stepsPerFrame, p, perFrame) {
+      initGrid(size, size, p.seed, p.seedMode); // also assigns seed colours
+      const block = stepsPerFrame;
+      let done = 0, frame = 0;
+      while (done < totalTicks) {
+        const n = Math.min(block, totalTicks - done);
+        for (let i = 0; i < n; i++) tick(p);
+        done += n;
+        frame++;
+        await perFrame(frame);
+        if (exportCancel) return false;
+        await sleep(0); // yield so the UI thread is never blocked
+      }
+      return true;
+    }
+
+    // Renders the current V/C field (at `size`) into a fresh canvas and downloads it.
+    function renderOffscreen(size, filename) {
+      ensureLuts();
+      const out = document.createElement('canvas');
+      out.width = size; out.height = size;
+      const octx = out.getContext('2d');
+      const im = octx.createImageData(size, size);
+      const d = im.data;
+      for (let j = 3; j < d.length; j += 4) d[j] = 255;
+      for (let i = 0, j = 0; i < size * size; i++, j += 4) cellColor(i, d, j);
+      octx.putImageData(im, 0, 0);
+      out.toBlob((blob) => { if (blob) downloadBlob(blob, filename); }, 'image/png');
+    }
+
+    // Draws the current V/C field into a reusable canvas + ImageData (video).
+    function paintFieldTo(ctx, size, im) {
+      ensureLuts();
+      const d = im.data;
+      for (let j = 3; j < d.length; j += 4) d[j] = 255;
+      for (let i = 0, j = 0; i < size * size; i++, j += 4) cellColor(i, d, j);
+      ctx.putImageData(im, 0, 0);
+    }
+
+    // ---- shared export lifecycle (suspend live sim, save/restore state) ----
+    function beginExport() {
+      exporting = true;
+      exportCancel = false;
+      loopSuspended = true;
+      const wasRunning = (simState === 'running');
+      ignoreWorkerFrames = true;
+      if (sim.useWorker) simSetRunning(false);
+      return {
+        savedU: U, savedV: V, savedUn: U_next, savedVn: V_next,
+        savedC: C, savedCn: C_next,
+        savedW: W, savedH: H, savedFc: frameCount,
+        wasRunning
+      };
+    }
+    function endExport(s) {
+      U = s.savedU; V = s.savedV;
+      U_next = s.savedUn; V_next = s.savedVn;
+      C = s.savedC; C_next = s.savedCn;
+      W = s.savedW; H = s.savedH;
+      frameCount = s.savedFc;
+      imgData = null; // dimensions may have changed under it
+      hideExportModal();
+      $('btn-hires').disabled = false;
+      $('btn-video').disabled = false;
+      exporting = false;
+      loopSuspended = false;
+      ignoreWorkerFrames = false;
+      if (sim.useWorker && s.wasRunning) simSetRunning(true);
+    }
+
+    // High-res: replay the exact finished formation on the CPU at the target
+    // size, then export the final frame as a PNG. Uses the real number of ticks
+    // the live run took (frameCount * stepsPerFrame) so the image matches.
+    async function startHiResExport() {
+      if (exporting) return;
+      if (!canExport()) { warnNeedDone(); return; }
+      $('btn-hires').disabled = true;
+      const s = beginExport();
+      const size = parseInt($('ctl-exsize').value, 10);
+      const ex = Object.assign({}, params);
+      const iters = frameCount * params.stepsPerFrame;
+      const totalFrames = Math.max(1, frameCount);
+      showExportModal(`Rendering… 0 / ${totalFrames} frames`);
+      const ok = await runSimAsync(size, iters, params.stepsPerFrame, ex, async (f) => {
+        setExportProgress(Math.round(f / totalFrames * 100), `Rendering… frame ${f} / ${totalFrames}`);
+      });
+      if (ok && !exportCancel) renderOffscreen(size, exportName() + '.png');
+      endExport(s);
+    }
+
+    function pickVideoMime() {
+      const candidates = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+      if (typeof MediaRecorder === 'undefined') return '';
+      for (const c of candidates) {
+        try { if (MediaRecorder.isTypeSupported(c)) return c; } catch (e) {}
+      }
+      return '';
+    }
+
+    // Export Video: replay the finished formation on the CPU and record each
+    // displayed frame to a 60fps WebM. Speed multiplies playback rate; the
+    // recurrence of the whole formation is frameCount displayed frames.
+    async function doVideoExport(size, filename, speed) {
+      if (exporting) return;
+      if (!canExport()) { warnNeedDone(); return; }
+      const mime = pickVideoMime();
+      if (!mime) {
+        showNotice('Video not supported',
+          'This browser cannot record video (MediaRecorder / WebM unavailable). Try a recent Chrome, Edge, or Firefox.');
+        return;
+      }
+      $('btn-video').disabled = true;
+      const s = beginExport();
+
+      const vcanvas = document.createElement('canvas');
+      vcanvas.width = size; vcanvas.height = size;
+      const vctx = vcanvas.getContext('2d');
+      const im = vctx.createImageData(size, size);
+
+      let recorder = null, stopped = false;
+      try {
+        const stream = vcanvas.captureStream(0);
+        recorder = new MediaRecorder(stream, { mimeType: mime });
+        const chunks = [];
+        recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+        recorder.onstop = () => {
+          stopped = true;
+          if (!exportCancel && chunks.length) {
+            downloadBlob(new Blob(chunks, { type: mime }), filename + '.webm');
+          }
+          endExport(s);
+        };
+        videoRecorder = recorder;
+        recorder.start();
+
+        const track = stream.getVideoTracks()[0];
+        const ex = Object.assign({}, params);
+        const totalFrames = Math.max(1, frameCount);
+        const delay = 1000 / (60 * speed);
+        showExportModal(`Recording… 0 / ${totalFrames} frames`);
+        const ok = await runSimAsync(size, frameCount * params.stepsPerFrame, params.stepsPerFrame, ex, async (f) => {
+          paintFieldTo(vctx, size, im);
+          if (track.requestFrame) track.requestFrame();
+          setExportProgress(Math.round(f / totalFrames * 100), `Recording… frame ${f} / ${totalFrames}`);
+          await sleep(delay);
+        });
+        if (recorder.state !== 'inactive') recorder.stop();
+        else if (!stopped) endExport(s);
+      } catch (e) {
+        console.warn('Organica video export failed:', e);
+        if (recorder && recorder.state !== 'inactive') { try { recorder.stop(); } catch (e2) {} }
+        else endExport(s);
+        showNotice('Video export failed', String(e && e.message ? e.message : e));
+      }
+    }
+
+    function openVideoDialog() {
+      if (!canExport()) { warnNeedDone(); return; }
+      $('ctl-vname').value = exportName();
+      $('video-error').textContent = '';
+      $('video-modal').classList.add('visible');
+    }
+    function closeVideoDialog() { $('video-modal').classList.remove('visible'); }
+
+    $('btn-hires').addEventListener('click', () => { startHiResExport(); });
+    $('btn-video').addEventListener('click', () => { openVideoDialog(); });
 
     $('btn-cancel-export').addEventListener('click', () => {
-      hiResCancel = true;
+      exportCancel = true;
+      if (videoRecorder && videoRecorder.state !== 'inactive') {
+        try { videoRecorder.stop(); } catch (e) {}
+      }
+    });
+
+    $('btn-video-close').addEventListener('click', closeVideoDialog);
+    $('btn-video-cancel').addEventListener('click', closeVideoDialog);
+    $('btn-video-apply').addEventListener('click', () => {
+      const size = parseInt($('ctl-vsize').value, 10);
+      const name = ($('ctl-vname').value.trim() || exportBasename()).replace(/\.webm$/i, '');
+      const speed = parseFloat($('ctl-vspeed').value) || 1;
+      closeVideoDialog();
+      doVideoExport(size, name, speed);
+    });
+    $('video-modal').addEventListener('click', (e) => {
+      if (e.target === $('video-modal')) closeVideoDialog();
     });
 
     function paramsJSON() {
@@ -2980,7 +3164,7 @@ function buildColorLut() {
         // Otherwise run the ticks inline here.
         if (running && gpu.active) {
           gpuStep(params.stepsPerFrame);
-          frameCount += params.stepsPerFrame;
+          frameCount++; // count displayed frames (consistent with CPU/worker paths)
           fpsFrames++;
           if (++gpuStabCounter % 4 === 0) gpuCheckStability();
         } else if (running && !sim.useWorker) {
