@@ -2894,8 +2894,7 @@ function buildColorLut() {
     let running = false;
     let simState = 'idle'; // 'idle' | 'running' | 'paused' | 'done'
     let stableCount = 0;
-    let gpuLastV = null; // previous GPU V snapshot for stability diff
-    let gpuStabCounter = 0; // throttles the GPU readback stability check
+    let gpuLastV = null; // previous GPU V snapshot for per-frame stability diff
     // A cell is treated as "still evolving" only if its V changes by at least
     // one LUT bin (1/255) between frames — smaller shifts cannot alter the
     // rendered colour, so they must not keep the sim running. When fewer than
@@ -3171,7 +3170,8 @@ function buildColorLut() {
           gpuStep(params.stepsPerFrame);
           frameCount++; // count displayed frames (consistent with CPU/worker paths)
           fpsFrames++;
-          if (++gpuStabCounter % 4 === 0) gpuCheckStability();
+          gpuCheckStability(); // every displayed frame, so the comparison window
+                               // matches the CPU path (consecutive frames), not 4
         } else if (running && !sim.useWorker) {
           for (let s = 0; s < params.stepsPerFrame; s++) tick(params);
           frameCount++;
