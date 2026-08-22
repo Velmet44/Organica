@@ -540,6 +540,10 @@
           <label for="ctl-colored">Enable Colored Seeds</label>
           <input type="checkbox" id="ctl-colored">
         </div>
+        <div class="check-row">
+          <label for="ctl-colorrandom">Randomize Seed Colors</label>
+          <input type="checkbox" id="ctl-colorrandom" title="Each seed gets a deterministic-random color from the seed (reproducible 1:1)">
+        </div>
         <div class="param-row">
           <div class="param-head"><label for="ctl-seedpalette">Seed Palette</label></div>
           <select id="ctl-seedpalette">
@@ -700,9 +704,11 @@
       colorBias: 0.5,
       vibrance: 1.0,        // 0.0 = natural, 1.0 = default, 2.0+ = boosted midtone saturation
       coloredSeeds: false,   // master toggle for per-seed colouring
+      seedColorRandom: false,// assign each seed a deterministic-random colour (from seed)
       seedColorDiff: 0.8,    // Seed Colour Difference: spread of colours across seeds
       seedColorDiffusion: 0.08, // Seed Colour Diffusion: blend softness at joining fronts
       seedColorOffset: 0.0,  // base rotation of seed colour assignment
+      seedColorBrightness: 0.5, // 0 = full brightness everywhere pattern exists (no dimming as it grows); 1 = dim by V
       seedPalette: 'viridis' // palette mapping the seed colour coordinate -> RGB
     };
 
@@ -710,11 +716,14 @@
     let W = 0, H = 0;           // grid dimensions
     let U, V, U_next, V_next;   // double-buffered chemical concentrations
     let C, C_next;              // per-cell seed colour coordinate (0..1)
+    let seedAnchors = [];       // seed geometry (for deterministic colouring)
+    let cellSeed1 = null, cellSeed2 = null; // cached nearest/2nd-nearest seed per cell
     let frameCount = 0;
+    let stabilityPrev = null;    // reused buffer for stability diff (avoids per-frame alloc)
 
     const SEED_U = 0.5, SEED_V = 0.25;
 
-    function paintBlob(cx, cy, radius, uVal, vVal, cVal) {
+    function paintBlob(cx, cy, radius, uVal, vVal) {
       const r2 = radius * radius;
       for (let dy = -radius; dy <= radius; dy++) {
         const yy = (((cy + dy) % H) + H) % H;
@@ -725,12 +734,11 @@
           const i = row + xx;
           U[i] = uVal;
           V[i] = vVal;
-          C[i] = cVal;
         }
       }
     }
 
-    function paintSquare(cx, cy, half, uVal, vVal, cVal) {
+    function paintSquare(cx, cy, half, uVal, vVal) {
       for (let dy = -half; dy <= half; dy++) {
         const yy = (((cy + dy) % H) + H) % H;
         const row = yy * W;
@@ -739,13 +747,12 @@
           const i = row + xx;
           U[i] = uVal;
           V[i] = vVal;
-          C[i] = cVal;
         }
       }
     }
 
     // Paints a full-length band (horizontal strip if vertical=false).
-    function paintBand(pos, thickness, vertical, uVal, vVal, cVal) {
+    function paintBand(pos, thickness, vertical, uVal, vVal) {
       const along = vertical ? W : H;
       for (let a = pos; a < pos + thickness; a++) {
         const aa = ((a % along) + along) % along;
@@ -753,7 +760,6 @@
           const i = vertical ? (b * W + aa) : (aa * W + b);
           U[i] = uVal;
           V[i] = vVal;
-          C[i] = cVal;
         }
       }
     }
@@ -763,6 +769,32 @@
       let s = '';
       for (let i = 0; i < 6; i++) s += chars[Math.floor(Math.random() * chars.length)];
       return s;
+    }
+
+    // C-only paints (colour field only; never touch U/V so they can be
+    // re-coloured live without disturbing a running simulation).
+    function paintBlobC(cx, cy, radius, cVal) {
+      const r2 = radius * radius;
+      for (let dy = -radius; dy <= radius; dy++) {
+        const yy = (((cy + dy) % H) + H) % H;
+        const row = yy * W;
+        const span = Math.floor(Math.sqrt(r2 - dy * dy));
+        for (let dx = -span; dx <= span; dx++) {
+          const xx = (((cx + dx) % W) + W) % W;
+          C[row + xx] = cVal;
+        }
+      }
+    }
+
+    function paintBandC(pos, thickness, vertical, cVal) {
+      const along = vertical ? W : H;
+      for (let a = pos; a < pos + thickness; a++) {
+        const aa = ((a % along) + along) % along;
+        for (let b = 0; b < (vertical ? H : W); b++) {
+          const i = vertical ? (b * W + aa) : (aa * W + b);
+          C[i] = cVal;
+        }
+      }
     }
 
     // Allocates and seeds both buffer pairs. Deterministic for a given
@@ -781,16 +813,20 @@
 
       const rand = mulberry32(hashStr(seedStr));
       const frac = (x) => x - Math.floor(x);
-      const diff = params.seedColorDiff;
-      const off = params.seedColorOffset;
+      // Seed colour is assigned in assignColors() (called after seeding). It is
+      // either a smooth spatial gradient or a deterministic-random hue per seed
+      // (see the seedColorRandom option). seedAnchors records seed geometry so
+      // colours can be re-derived live without disturbing a running simulation.
+      seedAnchors = [];
 
       switch (mode) {
         case 'spots': {
           const count = 20 + Math.floor(rand() * 61);            // 20-80 blobs
           for (let s = 0; s < count; s++) {
-            paintBlob(Math.floor(rand() * w), Math.floor(rand() * h),
-                      2 + Math.floor(rand() * 7), SEED_U, SEED_V,
-                      frac(s / count * diff + off));
+            const bx = Math.floor(rand() * w), by = Math.floor(rand() * h);
+            const br = 2 + Math.floor(rand() * 7);
+            paintBlob(bx, by, br, SEED_U, SEED_V);
+            seedAnchors.push({ type: 'blob', x: bx, y: by, r: br });
           }
           break;
         }
@@ -799,9 +835,10 @@
           const vertical = rand() < 0.5;
           const maxThick = Math.max(3, Math.floor((vertical ? w : h) / 64));
           for (let b = 0; b < bands; b++) {
-            paintBand(Math.floor(rand() * (vertical ? w : h)),
-                      1 + Math.floor(rand() * maxThick), vertical,
-                      SEED_U, SEED_V, frac(b / bands * diff + off));
+            const pos = Math.floor(rand() * (vertical ? w : h));
+            const thick = 1 + Math.floor(rand() * maxThick);
+            paintBand(pos, thick, vertical, SEED_U, SEED_V);
+            seedAnchors.push({ type: 'band', pos, thick, vertical });
           }
           break;
         }
@@ -809,50 +846,155 @@
           for (let i = 0; i < n; i++) {
             U[i] = 0.8 + rand() * 0.2;                           // U in [0.8, 1]
             V[i] = rand() * 0.2;                                 // V in [0, 0.2]
-            C[i] = frac(rand() * diff + off);
           }
           break;
         }
         case 'center': {
-          paintSquare(w >> 1, h >> 1, Math.max(4, w >> 3), SEED_U, SEED_V, frac(off));
+          const cx = w >> 1, cy = h >> 1, r = Math.max(4, w >> 3);
+          paintSquare(cx, cy, r, SEED_U, SEED_V);
+          seedAnchors.push({ type: 'blob', x: cx, y: cy, r });
           break;
         }
         case 'corners': {
           const off2 = Math.max(4, w >> 3);
           const rad = Math.max(3, w >> 4);
-          paintBlob(off2, off2, rad, SEED_U, SEED_V, frac(0 / 4 * diff + off));
-          paintBlob(w - off2, off2, rad, SEED_U, SEED_V, frac(1 / 4 * diff + off));
-          paintBlob(off2, h - off2, rad, SEED_U, SEED_V, frac(2 / 4 * diff + off));
-          paintBlob(w - off2, h - off2, rad, SEED_U, SEED_V, frac(3 / 4 * diff + off));
+          const cs = [[off2, off2], [w - off2, off2], [off2, h - off2], [w - off2, h - off2]];
+          for (const [cx, cy] of cs) {
+            paintBlob(cx, cy, rad, SEED_U, SEED_V);
+            seedAnchors.push({ type: 'blob', x: cx, y: cy, r: rad });
+          }
           break;
         }
         case 'cross': {
           const thick = Math.max(2, Math.round(w / 128));
-          paintBand((w >> 1) - (thick >> 1), thick, false, SEED_U, SEED_V, frac(off));
-          paintBand((h >> 1) - (thick >> 1), thick, true,  SEED_U, SEED_V, frac(off));
+          const px = (w >> 1) - (thick >> 1), py = (h >> 1) - (thick >> 1);
+          paintBand(px, thick, false, SEED_U, SEED_V);
+          paintBand(py, thick, true,  SEED_U, SEED_V);
+          seedAnchors.push({ type: 'band', pos: px, thick, vertical: false });
+          seedAnchors.push({ type: 'band', pos: py, thick, vertical: true });
           break;
         }
         case 'random_scatter': {
           for (let i = 0; i < n; i++) {
             U[i] = rand();
             V[i] = rand();
-            C[i] = frac(rand() * diff + off);
           }
           break;
         }
       }
 
+      computeVoronoi();
+      assignColors();
+
       frameCount = 0;
+    }
+
+    // Cache, per cell, the index of the nearest and second-nearest seed (by
+    // Euclidean distance to the seed's representative point). Recomputed only
+    // when the seed layout changes (reseed), never on a colour-only change, so
+    // live recolouring stays O(cells).
+    function computeVoronoi() {
+      const n = W * H;
+      if (!cellSeed1 || cellSeed1.length !== n) {
+        cellSeed1 = new Int32Array(n);
+        cellSeed2 = new Int32Array(n);
+      }
+      const pts = [];
+      for (const a of seedAnchors) {
+        const p = a.type === 'blob' ? [a.x, a.y]
+          : (a.vertical ? [a.pos + a.thick / 2, H / 2] : [W / 2, a.pos + a.thick / 2]);
+        a._px = p[0]; a._py = p[1];
+        pts.push(p);
+      }
+      for (let i = 0; i < n; i++) {
+        const x = i % W, y = (i / W) | 0;
+        let d1 = Infinity, d2 = Infinity, s1 = -1, s2 = -1;
+        for (let s = 0; s < pts.length; s++) {
+          const dx = x - pts[s][0], dy = y - pts[s][1];
+          const d = dx * dx + dy * dy;
+          if (d < d1) { d2 = d1; s2 = s1; d1 = d; s1 = s; }
+          else if (d < d2) { d2 = d; s2 = s; }
+        }
+        cellSeed1[i] = s1; cellSeed2[i] = s2;
+      }
+    }
+
+    // (Re)build the colour field C per the current colour mode, WITHOUT
+    // touching U/V. Each cell gets the colour of its territory (the nearest
+    // seed, blended toward the 2nd-nearest where two territories meet). Because
+    // the colour belongs to the WHOLE territory rather than diffusing from a
+    // point, it stays at full brightness as the seed grows (no dilution) and
+    // only blends at contacts. Two modes:
+    //  - Gradient (default): hue from a smooth spatial gradient.
+    //  - Random: each seed gets a deterministic-random hue from the seed string
+    //    (same settings + seed recreate the image 1:1).
+    function assignColors() {
+      if (!C || W === 0) return;
+      const frac = (x) => x - Math.floor(x);
+      C.fill(0);
+
+      if (!seedAnchors.length) {
+        // noise / random_scatter: the whole grid is the colour field.
+        if (params.seedColorRandom) {
+          const rng = mulberry32(hashStr(params.seed + '\x00color'));
+          for (let i = 0, n = W * H; i < n; i++) C[i] = rng();
+        } else {
+          const colorAt = (x, y) =>
+            frac(((x / W) * 0.5 + (y / H) * 0.5) * params.seedColorDiff + params.seedColorOffset);
+          for (let i = 0, n = W * H; i < n; i++) C[i] = colorAt(i % W, (i / W) | 0);
+        }
+        if (gpu.active) gpuUploadColor();
+        return;
+      }
+
+      const cs = params.seedColorRandom;
+      const rng = cs ? mulberry32(hashStr(params.seed + '\x00color')) : null;
+      const colorAt = (x, y) =>
+        frac(((x / W) * 0.5 + (y / H) * 0.5) * params.seedColorDiff + params.seedColorOffset);
+      for (const a of seedAnchors) a.c = cs ? rng() : colorAt(a._px, a._py);
+
+      const soft = params.seedColorDiffusion; // 0 = hard borders, 1 = soft blend
+      const n = W * H;
+      for (let i = 0; i < n; i++) {
+        const s1 = cellSeed1[i], s2 = cellSeed2[i];
+        if (s1 < 0) continue;
+        const a1 = seedAnchors[s1];
+        if (s2 < 0) { C[i] = a1.c; continue; }
+        const a2 = seedAnchors[s2];
+        const x = i % W, y = (i / W) | 0;
+        const dx1 = x - a1._px, dy1 = y - a1._py; const d1 = dx1 * dx1 + dy1 * dy1;
+        const dx2 = x - a2._px, dy2 = y - a2._py; const d2 = dx2 * dx2 + dy2 * dy2;
+        let w1 = d2 / (d1 + d2);                 // 1 at seed1, 0.5 at the border
+        if (soft < 1) {
+          const wHard = d1 < d2 ? 1 : 0;         // hard Voronoi flip
+          w1 = wHard * (1 - soft) + w1 * soft;
+        }
+        C[i] = a1.c * w1 + a2.c * (1 - w1);
+      }
+      if (gpu.active) gpuUploadColor();
+    }
+
+    // Live re-colour (slider / checkbox changes) without resetting the sim.
+    function recolor() {
+      if (!C || W === 0) return;
+      assignColors();
+      if (gpu.active) {
+        // Colour lives in its own texture, so the running U/V pattern is
+        // untouched — recolouring can never wipe the simulation.
+        gpuDisplay();
+      } else {
+        renderCPU();
+      }
     }
 
     // One discrete Gray-Scott step (dt = 1). Reads U/V, writes U_next/V_next,
     // then swaps — never updates in place. Toroidal wrapping boundaries.
     // Hot inner loop is split: interior columns use constant offsets, only the
-    // first/last column pays for wrap-around index math.
+    // first/last column pays for wrap-around index math. The colour field is
+    // static (see assignColors) and is never touched here.
     function tick(p) {
       const f = p.f, k = p.k, Du = p.Du, Dv = p.Dv;
-      const cDiff = p.coloredSeeds ? p.seedColorDiffusion : 0;
-      const _U = U, _V = V, _Un = U_next, _Vn = V_next, _C = C, _Cn = C_next;
+      const _U = U, _V = V, _Un = U_next, _Vn = V_next;
       const lastX = W - 1;
 
       for (let y = 0; y < H; y++) {
@@ -872,15 +1014,11 @@
                        (_U[ul] + _U[ur] + _U[dl] + _U[dr]) * 0.05 - _U[i];
           const lapV = (_V[l] + _V[r] + _V[uN] + _V[dN]) * 0.20 +
                        (_V[ul] + _V[ur] + _V[dl] + _V[dr]) * 0.05 - _V[i];
-          const lapC = (_C[l] + _C[r] + _C[uN] + _C[dN]) * 0.20 +
-                       (_C[ul] + _C[ur] + _C[dl] + _C[dr]) * 0.05 - _C[i];
           const re = _U[i] * _V[i] * _V[i];
           let nu = _U[i] + (Du * lapU - re + f * (1 - _U[i]));
           let nv = _V[i] + (Dv * lapV + re - (f + k) * _V[i]);
-          let nc = _C[i] + cDiff * lapC;
           _Un[i] = nu < 0 ? 0 : nu > 1 ? 1 : nu;
           _Vn[i] = nv < 0 ? 0 : nv > 1 ? 1 : nv;
-          _Cn[i] = nc < 0 ? 0 : nc > 1 ? 1 : nc;
         }
 
         // interior columns
@@ -896,18 +1034,14 @@
                        (_U[ul] + _U[ur] + _U[dl] + _U[dr]) * 0.05 - _U[i];
           const lapV = (_V[l] + _V[r] + _V[uN] + _V[dN]) * 0.20 +
                        (_V[ul] + _V[ur] + _V[dl] + _V[dr]) * 0.05 - _V[i];
-          const lapC = (_C[l] + _C[r] + _C[uN] + _C[dN]) * 0.20 +
-                       (_C[ul] + _C[ur] + _C[dl] + _C[dr]) * 0.05 - _C[i];
 
           const re = _U[i] * _V[i] * _V[i];
 
           let nu = _U[i] + (Du * lapU - re + f * (1 - _U[i]));
           let nv = _V[i] + (Dv * lapV + re - (f + k) * _V[i]);
-          let nc = _C[i] + cDiff * lapC;
 
           _Un[i] = nu < 0 ? 0 : nu > 1 ? 1 : nu;
           _Vn[i] = nv < 0 ? 0 : nv > 1 ? 1 : nv;
-          _Cn[i] = nc < 0 ? 0 : nc > 1 ? 1 : nc;
         }
 
         // right edge column (wraps to left edge)
@@ -922,22 +1056,17 @@
                        (_U[ul] + _U[ur] + _U[dl] + _U[dr]) * 0.05 - _U[i];
           const lapV = (_V[l] + _V[r] + _V[uN] + _V[dN]) * 0.20 +
                        (_V[ul] + _V[ur] + _V[dl] + _V[dr]) * 0.05 - _V[i];
-          const lapC = (_C[l] + _C[r] + _C[uN] + _C[dN]) * 0.20 +
-                       (_C[ul] + _C[ur] + _C[dl] + _C[dr]) * 0.05 - _C[i];
           const re = _U[i] * _V[i] * _V[i];
           let nu = _U[i] + (Du * lapU - re + f * (1 - _U[i]));
           let nv = _V[i] + (Dv * lapV + re - (f + k) * _V[i]);
-          let nc = _C[i] + cDiff * lapC;
           _Un[i] = nu < 0 ? 0 : nu > 1 ? 1 : nu;
           _Vn[i] = nv < 0 ? 0 : nv > 1 ? 1 : nv;
-          _Cn[i] = nc < 0 ? 0 : nc > 1 ? 1 : nc;
         }
       }
 
       // Swap so the freshly written buffers become the read buffers.
       U = _Un; U_next = _U;
       V = _Vn; V_next = _V;
-      C = _Cn; C_next = _C;
     }
 
     /* ---------- 4. Renderer (CPU Canvas2D path, palette LUT) ---------- */
@@ -1152,7 +1281,10 @@ function buildColorLut() {
       if (params.coloredSeeds) {
         const ci = (C[i] * 255) | 0;
         const sidx = ci * 3;
-        const vn = V[i] > 0.4 ? 1 : V[i] * 2.5; // clamp(V / 0.4, 0, 1)
+        // Brightness loss as the pattern grows: vbase dims by V, while
+        // seedColorBrightness blends that toward full brightness (0 = no loss).
+        const vbase = V[i] > 0.4 ? 1 : V[i] * 2.5;            // clamp(V/0.4, 0, 1)
+        const vn = (1 - params.seedColorBrightness) + params.seedColorBrightness * vbase;
         out[o]     = (seedColorLut[sidx]     * vn) | 0;
         out[o + 1] = (seedColorLut[sidx + 1] * vn) | 0;
         out[o + 2] = (seedColorLut[sidx + 2] * vn) | 0;
@@ -1200,8 +1332,9 @@ function buildColorLut() {
       ['colorBias',     'Colour Bias', '',    0.0,   1.0,   0.01,  2, 'sec-visual'],
       ['vibrance',      'Vibrance',    '',    0.0,   2.0,   0.05,  2, 'sec-visual'],
       ['seedColorDiff',     'Seed Color Diff', '', 0.0,   1.0,   0.01,  2, 'sec-colored'],
-      ['seedColorDiffusion','Seed Color Diffusion','',0.0,0.25,  0.005, 3, 'sec-colored'],
-      ['seedColorOffset',   'Seed Color Offset', '', 0.0, 1.0,   0.01,  2, 'sec-colored']
+      ['seedColorDiffusion','Seed Color Diffusion','',0.0,1.0,   0.01,  2, 'sec-colored'],
+      ['seedColorOffset',   'Seed Color Offset', '', 0.0, 1.0,   0.01,  2, 'sec-colored'],
+      ['seedColorBrightness','Color Brightness', '', 0.0, 1.0,   0.01,  2, 'sec-colored']
     ];
 
     const ctlRefs = {}; // key -> { input, out, decimals }
@@ -1228,6 +1361,12 @@ function buildColorLut() {
         params[key] = parseFloat(input.value);
         out.textContent = params[key].toFixed(decimals);
         if (key === 'f' || key === 'k') setActivePreset(null); // deviated from preset
+        if (key === 'seedColorBrightness') {
+          // Brightness only rescales the existing colour field — no recompute.
+          if (gpu.active) gpuDisplay(); else renderCPU();
+        } else if (key === 'seedColorDiff' || key === 'seedColorOffset' || key === 'seedColorDiffusion') {
+          recolor();
+        }
       });
     }
     SLIDERS.forEach(buildSliderRow);
@@ -1291,11 +1430,13 @@ function buildColorLut() {
 
       if (preset.coloredSeeds !== undefined) {
         params.coloredSeeds = !!preset.coloredSeeds;
+        params.seedColorRandom = !!preset.seedColorRandom;
         params.seedPalette = preset.seedPalette;
         params.seedColorDiff = preset.seedColorDiff;
         params.seedColorDiffusion = preset.seedColorDiffusion;
         params.seedColorOffset = preset.seedColorOffset;
         $('ctl-colored').checked = params.coloredSeeds;
+        $('ctl-colorrandom').checked = params.seedColorRandom;
         $('ctl-seedpalette').value = params.seedPalette;
         for (const k of ['seedColorDiff', 'seedColorDiffusion', 'seedColorOffset']) {
           if (ctlRefs[k]) {
@@ -1340,9 +1481,14 @@ function buildColorLut() {
     // Enable/disable every control under the Colored Seeds master checkbox.
     function applyColoredEnabled() {
       const on = params.coloredSeeds;
+      const random = params.seedColorRandom;
       $('ctl-seedpalette').disabled = !on;
-      for (const k of ['seedColorDiff', 'seedColorDiffusion', 'seedColorOffset']) {
-        if (ctlRefs[k]) ctlRefs[k].input.disabled = !on;
+      $('ctl-colorrandom').disabled = !on;
+      // Seed Color Diff / Offset only affect the gradient mode; Diffusion and
+      // Brightness apply in BOTH modes.
+      const gradientOnly = k => k === 'seedColorDiff' || k === 'seedColorOffset';
+      for (const k of ['seedColorDiff', 'seedColorDiffusion', 'seedColorOffset', 'seedColorBrightness']) {
+        if (ctlRefs[k]) ctlRefs[k].input.disabled = !on || (random && gradientOnly(k));
       }
       if (W > 0) { if (gpu.active) gpuDisplay(); else renderCPU(); }
     }
@@ -1350,6 +1496,12 @@ function buildColorLut() {
     $('ctl-colored').addEventListener('change', () => {
       params.coloredSeeds = $('ctl-colored').checked;
       applyColoredEnabled();
+    });
+
+    $('ctl-colorrandom').addEventListener('change', () => {
+      params.seedColorRandom = $('ctl-colorrandom').checked;
+      applyColoredEnabled();
+      recolor();
     });
 
     $('ctl-seedpalette').addEventListener('change', () => {
@@ -1414,6 +1566,8 @@ function buildColorLut() {
       lutKeyGPU: '',
       seedLutTex: null,
       seedLutKeyGPU: '',
+      colorTex: null,
+      colorBuf: null,
       size: 0,
       canReadback: false
     };
@@ -1429,39 +1583,34 @@ function buildColorLut() {
     const SIM_FRAG_SRC = `
       precision highp float;
       uniform sampler2D uState;
-      uniform float uF, uK, uDu, uDv, uDt, uSeedDiff;
+      uniform float uF, uK, uDu, uDv, uDt;
       uniform vec2 uTexel;
       varying vec2 v_texCoord;
 
-      vec3 s(vec2 off) {
-        return texture2D(uState, fract(v_texCoord + off)).rgb;
+      vec2 s(vec2 off) {
+        return texture2D(uState, fract(v_texCoord + off)).rg;
       }
 
       void main() {
-        vec3 st = texture2D(uState, v_texCoord).rgb;
-        float U = st.r, V = st.g, c = st.b;
+        vec4 st = texture2D(uState, v_texCoord);
+        float U = st.r, V = st.g;
 
         vec2 lap = vec2(0.0);
         lap += 0.20 * (s(vec2( uTexel.x, 0.0)) + s(vec2(-uTexel.x, 0.0)) +
                        s(vec2(0.0,  uTexel.y)) + s(vec2(0.0, -uTexel.y)));
         lap += 0.05 * (s(vec2( uTexel.x,  uTexel.y)) + s(vec2(-uTexel.x,  uTexel.y)) +
-                       s(vec2( uTexel.x, -uTexel.y)) + s(vec2(-uTexel.x, -uTexel.y)));
+                      s(vec2( uTexel.x, -uTexel.y)) + s(vec2(-uTexel.x, -uTexel.y)));
         lap -= st.rg;
-
-        float lapC = 0.20 * (s(vec2( uTexel.x, 0.0)).b + s(vec2(-uTexel.x, 0.0)).b +
-                             s(vec2(0.0,  uTexel.y)).b + s(vec2(0.0, -uTexel.y)).b)
-                  + 0.05 * (s(vec2( uTexel.x,  uTexel.y)).b + s(vec2(-uTexel.x,  uTexel.y)).b +
-                            s(vec2( uTexel.x, -uTexel.y)).b + s(vec2(-uTexel.x, -uTexel.y)).b)
-                  - c;
 
         float reaction = U * V * V;
         float dU = uDu * lap.r - reaction + uF * (1.0 - U);
         float dV = uDv * lap.g + reaction - (uF + uK) * V;
-        float dC = uSeedDiff * lapC;
 
+        // Colour is a STATIC per-cell territory field (uploaded separately as
+        // uColor), so it is never diffused here.
         gl_FragColor = vec4(clamp(U + uDt * dU, 0.0, 1.0),
                             clamp(V + uDt * dV, 0.0, 1.0),
-                            clamp(c + dC, 0.0, 1.0), 1.0);
+                            0.0, 1.0);
       }`;
 
     const DISP_FRAG_SRC = `
@@ -1469,18 +1618,21 @@ function buildColorLut() {
       uniform sampler2D uState;
       uniform sampler2D uLut;
       uniform sampler2D uSeedLut;
+      uniform sampler2D uColor;     // static per-cell territory colour
       uniform float uColored;
       uniform float uVRef;
+      uniform float uColorBrightness;
       varying vec2 v_texCoord;
       void main() {
         vec4 st = texture2D(uState, v_texCoord);
         float V = st.g;
-        float c = st.b;
+        float c = texture2D(uColor, v_texCoord).r;   // baked territory colour
         vec3 col;
         if (uColored > 0.5) {
           vec3 sc = texture2D(uSeedLut, vec2(c * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
-          float vn = clamp(V / uVRef, 0.0, 1.0);
-          col = sc * vn;
+          float vbase = clamp(V / uVRef, 0.0, 1.0);
+          float vn = (1.0 - uColorBrightness) + uColorBrightness * vbase;
+          col = sc * vn;            // background (V~0) shows no colour
         } else {
           col = texture2D(uLut, vec2(V * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
         }
@@ -1606,11 +1758,20 @@ function buildColorLut() {
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 
+        // Static per-cell territory colour texture (RGBA bytes; R = colour coord)
+        const colorTex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, colorTex);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
         gpu.gl = gl;
         gpu.progSim = progSim;
         gpu.progDisp = progDisp;
         gpu.lutTex = lutTex;
         gpu.seedLutTex = seedLutTex;
+        gpu.colorTex = colorTex;
         gpu.uniSim = {
           state: gl.getUniformLocation(progSim, 'uState'),
           f: gl.getUniformLocation(progSim, 'uF'),
@@ -1618,15 +1779,16 @@ function buildColorLut() {
           du: gl.getUniformLocation(progSim, 'uDu'),
           dv: gl.getUniformLocation(progSim, 'uDv'),
           dt: gl.getUniformLocation(progSim, 'uDt'),
-          texel: gl.getUniformLocation(progSim, 'uTexel'),
-          seedDiff: gl.getUniformLocation(progSim, 'uSeedDiff')
+          texel: gl.getUniformLocation(progSim, 'uTexel')
         };
         gpu.uniDisp = {
           state: gl.getUniformLocation(progDisp, 'uState'),
           lut: gl.getUniformLocation(progDisp, 'uLut'),
           seedLut: gl.getUniformLocation(progDisp, 'uSeedLut'),
+          color: gl.getUniformLocation(progDisp, 'uColor'),
           colored: gl.getUniformLocation(progDisp, 'uColored'),
-          vref: gl.getUniformLocation(progDisp, 'uVRef')
+          vref: gl.getUniformLocation(progDisp, 'uVRef'),
+          colorBrightness: gl.getUniformLocation(progDisp, 'uColorBrightness')
         };
 
         // adopt the working context: swap the GPU-backed canvas in as #sim
@@ -1646,6 +1808,7 @@ function buildColorLut() {
         }, false);
 
         uploadState();
+        gpuUploadColor();
       } catch (err) {
         gpu.active = false;
         document.getElementById('mode-banner').classList.add('visible');
@@ -1706,6 +1869,23 @@ function buildColorLut() {
       gpu.seedLutKeyGPU = seedLutKey;
     }
 
+    // Uploads the CPU colour field C into a dedicated texture for the DISP
+    // pass. Kept separate from the simulation state so recolouring never
+    // disturbs the running U/V pattern.
+    function gpuUploadColor() {
+      const gl = gpu.gl;
+      if (!gl || !gpu.size || !gpu.colorTex) return;
+      const n = W * H;
+      if (!gpu.colorBuf || gpu.colorBuf.length !== n * 4) gpu.colorBuf = new Uint8Array(n * 4);
+      const buf = gpu.colorBuf;
+      for (let i = 0, j = 0; i < n; i++, j += 4) {
+        buf[j] = (C[i] * 255) | 0;
+        buf[j + 3] = 255;
+      }
+      gl.bindTexture(gl.TEXTURE_2D, gpu.colorTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    }
+
     function gpuStep(steps) {
       const gl = gpu.gl;
       if (!gl || !gpu.size) return;
@@ -1719,7 +1899,6 @@ function buildColorLut() {
       gl.uniform1f(gpu.uniSim.dv, params.Dv);
       gl.uniform1f(gpu.uniSim.dt, 1.0); // spec: fixed timestep
       gl.uniform2f(gpu.uniSim.texel, 1 / W, 1 / H);
-      gl.uniform1f(gpu.uniSim.seedDiff, params.coloredSeeds ? params.seedColorDiffusion : 0.0);
 
       for (let i = 0; i < steps; i++) {
         const write = 1 - gpu.read;
@@ -1754,13 +1933,16 @@ function buildColorLut() {
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, gpu.lutTex);
       gl.uniform1i(gpu.uniDisp.lut, 1);
-      if (params.coloredSeeds) {
-        gl.activeTexture(gl.TEXTURE2);
-        gl.bindTexture(gl.TEXTURE_2D, gpu.seedLutTex);
-        gl.uniform1i(gpu.uniDisp.seedLut, 2);
-      }
+      // Always bind these so the samplers stay valid even when not coloured.
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, gpu.seedLutTex);
+      gl.uniform1i(gpu.uniDisp.seedLut, 2);
+      gl.activeTexture(gl.TEXTURE3);
+      gl.bindTexture(gl.TEXTURE_2D, gpu.colorTex);
+      gl.uniform1i(gpu.uniDisp.color, 3);
       gl.uniform1f(gpu.uniDisp.colored, params.coloredSeeds ? 1.0 : 0.0);
       gl.uniform1f(gpu.uniDisp.vref, 0.4);
+      gl.uniform1f(gpu.uniDisp.colorBrightness, params.seedColorBrightness);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }
 
@@ -1946,10 +2128,12 @@ function buildColorLut() {
         invert: params.invert,
         colorBias: params.colorBias,
         coloredSeeds: params.coloredSeeds,
+        seedColorRandom: params.seedColorRandom,
         seedPalette: params.seedPalette,
         seedColorDiff: params.seedColorDiff,
         seedColorDiffusion: params.seedColorDiffusion,
         seedColorOffset: params.seedColorOffset,
+        seedColorBrightness: params.seedColorBrightness,
         iterationsAtExport: frameCount
       }, null, 2);
     }
@@ -2107,7 +2291,7 @@ function buildColorLut() {
         const obj = JSON.parse(decodeURIComponent(escape(atob(location.hash.slice(1)))));
         const keys = ['f','k','Du','Dv','stepsPerFrame','gridSize',
                       'seed','seedMode','palette','invert','colorBias','vibrance',
-                      'coloredSeeds','seedPalette','seedColorDiff','seedColorDiffusion','seedColorOffset'];
+                      'coloredSeeds','seedColorRandom','seedPalette','seedColorDiff','seedColorDiffusion','seedColorOffset','seedColorBrightness'];
         let touched = false;
         for (const kk of keys) {
           if (kk in obj) { params[kk] = obj[kk]; touched = true; }
@@ -2130,6 +2314,7 @@ function buildColorLut() {
       $('ctl-palette').value = params.palette;
       $('ctl-invert').checked = !!params.invert;
       $('ctl-colored').checked = !!params.coloredSeeds;
+      $('ctl-colorrandom').checked = !!params.seedColorRandom;
       $('ctl-seedpalette').value = params.seedPalette;
       applyColoredEnabled();
     }
@@ -2150,7 +2335,6 @@ function buildColorLut() {
     function frame() {
       if (!loopSuspended) {
         if (running) {
-          const prevV = V.slice(); // copy for diff
           if (gpu.active) {
             gpuEnsureSize();
             gpuStep(params.stepsPerFrame);
@@ -2165,8 +2349,11 @@ function buildColorLut() {
           if (gpu.active) {
             vDiff = gpuStabilityDiff(); // 0 if float readback unsupported
           } else {
-            for (let i = 0; i < W * H; i++) {
-              vDiff += Math.abs(V[i] - prevV[i]);
+            const n = W * H;
+            if (!stabilityPrev || stabilityPrev.length !== n) stabilityPrev = new Float32Array(n);
+            for (let i = 0; i < n; i++) {
+              vDiff += Math.abs(V[i] - stabilityPrev[i]);
+              stabilityPrev[i] = V[i];
             }
           }
           const avgChange = vDiff / (W * H);

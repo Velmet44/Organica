@@ -3,3 +3,7 @@ IGNORETHISFOLDER/
 
 # Playwright CLI session artifacts
 .playwright-cli/
+
+# Local run/commit helpers (owner-only, not part of the project)
+commit.bat
+serve.bat

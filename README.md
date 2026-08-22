@@ -52,6 +52,22 @@ The V channel is mapped through a 256-entry colour LUT interpolated in **linear 
 - **Alien** — black → dark green → bright green → lime → white
 - **Neon** — black → purple → magenta → cyan → white
 
+## Colored Seeds
+
+A master **Colored Seeds** toggle paints each seed's growth with its own colour instead of the monochrome V→palette map. The colour belongs to the *whole territory* of each seed (computed as a static per-cell Voronoi field from the seed positions), so a seed's colour stays at full brightness as its growth expands — it never dilutes or fades. Where two seeds' growths meet, their colours blend.
+
+| Control | What it does |
+|---|---|
+| **Colored Seeds** | Master on/off for per-seed colouring. |
+| **Randomize Seed Colors** | Each seed gets a deterministic-random hue from the seed string. Same seed + settings always reproduces identical colours (1:1). Off = hues follow a smooth spatial gradient. |
+| **Seed Color Diff** | Spread of hues across seeds (gradient mode). |
+| **Seed Color Offset** | Rotates the gradient (gradient mode). |
+| **Seed Color Diffusion** | Blend softness where two territories meet — 0 = hard borders, 1 = full blend. |
+| **Color Brightness** | 0 = full colour everywhere the pattern exists (no dimming as it grows); higher = the colour dims with V as the pattern grows. |
+| **Seed Palette** | 10 palettes mapping the per-seed colour coordinate to RGB. |
+
+**Reproducibility:** random colours derive from `mulberry32(hashStr(seed + '\x00color'))`, so the coloured result is recreated 1:1 by the same seed + settings. Colouring never resets or disturbs a running simulation — recolouring only repaints the colour field.
+
 ## Presets
 
 | Preset | f | k | Pattern character |
@@ -97,12 +113,13 @@ Every parameter change updates the URL hash with a compact base64-encoded parame
 
 ## Architecture Notes
 
-Single `index.html` (~1700 lines): layout, styles, and nine clearly-sectioned script modules (PRNG → CPU sim → rendering → presets/seeding → GPU → export → transport → main loop).
+Single `index.html` (~2400 lines): layout, styles, and clearly-sectioned script modules (PRNG → CPU sim → rendering → presets/seeding → GPU → export → transport → main loop).
 
 - **GPU path**: two RGBA float textures ping-ponged through FBOs; the Laplacian is computed in a fragment shader with a 9-tap kernel (0.20 cardinal / 0.05 diagonal weights). Toroidal wrapping uses `fract()` in-shader because WebGL1 forbids `REPEAT` sampling on NPOT textures (grid 768).
 - **Capability probing**: the whole pipeline is built on a detached canvas first — context, `OES_texture_float`, highp precision, shader link, float render targets — and only swapped into the DOM if every step succeeds. Any failure silently falls back to the identical CPU implementation (with a small notice banner).
 - **CPU path**: double-buffered `Float32Array` grids, ~5–7ms per tick at 512² in Chrome.
 - **Colour**: both paths map V through the same 256-entry LUT; GPU uploads it as a tiny texture rebuilt only when palette/invert/bias change.
+- **Colored Seeds**: each seed's growth is painted with its own hue. The hue is a **static per-cell territory field** (Voronoi of seed positions, blended between the two nearest seeds at contacts) — it is never diffused, so colour stays at full brightness as a seed grows. On the GPU the field lives in its own texture sampled by the display pass, fully separate from the simulation state, so recolouring can never disturb a running pattern. Random hues come from `mulberry32(hashStr(seed + '\x00color'))` for 1:1 reproducibility.
 
 ## Known Trade-offs
 
