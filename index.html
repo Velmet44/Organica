@@ -291,6 +291,18 @@
     }
     #export-modal.visible { display: flex; }
 
+    /* Notice dialog (e.g. GPU unavailable) */
+    #notice-modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(5, 5, 10, 0.75);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 110;
+    }
+    #notice-modal.visible { display: flex; }
+
     .modal-box {
       background: var(--panel-bg);
       border: 1px solid var(--border);
@@ -506,6 +518,10 @@
         <div class="status-row">
           <label>Status</label><span id="sim-status" class="sim-status sim-idle">Idle</span>
         </div>
+        <div class="check-row">
+          <label for="ctl-gpu">Use GPU (WebGL)</label>
+          <input type="checkbox" id="ctl-gpu" title="Run the simulation on the GPU. Falls back to the CPU if WebGL or float textures are unavailable.">
+        </div>
         <!-- slider rows injected by JS -->
       </section>
 
@@ -653,6 +669,14 @@
     </div>
   </div>
 
+  <div id="notice-modal">
+    <div class="modal-box">
+      <h3 id="notice-title">Notice</h3>
+      <p id="notice-body" style="font-size:12px; color:#b8b8c8; margin-bottom:18px; line-height:1.5;"></p>
+      <button class="btn" id="btn-notice-ok">OK</button>
+    </div>
+  </div>
+
   <script>
     'use strict';
 
@@ -709,7 +733,8 @@
       seedColorDiffusion: 0.08, // Seed Colour Diffusion: blend softness at joining fronts
       seedColorOffset: 0.0,  // base rotation of seed colour assignment
       seedColorBrightness: 0.0, // 0 = full brightness everywhere pattern exists (no dimming as it grows); 1 = dim by V
-      seedPalette: 'viridis' // palette mapping the seed colour coordinate -> RGB
+      seedPalette: 'viridis', // palette mapping the seed colour coordinate -> RGB
+      useGPU: false            // opt-in WebGL/GPU simulation path (falls back to CPU/worker)
     };
 
     /* ---------- 3. Simulation core ---------- */
@@ -1515,10 +1540,7 @@ function buildColorLut() {
     $('ctl-colored').addEventListener('change', () => {
       params.coloredSeeds = $('ctl-colored').checked;
       applyColoredEnabled();
-      if (W > 0) {
-        if (gpu.active) { uploadState(); gpuDisplay(); }
-        else simRecolor();
-      }
+      if (W > 0) simRecolor();
     });
 
     $('ctl-colorrandom').addEventListener('change', () => {
@@ -1526,6 +1548,63 @@ function buildColorLut() {
       applyColoredEnabled();
       simRecolor();
     });
+
+    // --- GPU (WebGL) toggle ---
+    // Switch the active simulation backend. Enabling tears down the worker and
+    // brings up the WebGL path (re-seeding the state onto the GPU); disabling
+    // returns to the worker/CPU core. On init failure the checkbox is reverted
+    // and a notice is shown.
+    function enableGPU() {
+      if (sim.useWorker) {
+        try { if (sim.worker) sim.worker.terminate(); } catch (e) {}
+        if (sim.fallbackTimer) clearTimeout(sim.fallbackTimer);
+        sim.useWorker = false;
+        sim.worker = null;
+        sim.fallbackTimer = null;
+      }
+      if (!tryInitGPU()) return false;
+      running = false; setSimState('idle');
+      simInit(params.gridSize, params.seed, params.seedMode); // seeds GPU via initGrid + uploads
+      needsRender = true;
+      return true;
+    }
+
+    function disableGPU() {
+      gpu.active = false;
+      // Swap the WebGL canvas back to a fresh 2D canvas so CPU rendering works.
+      const fresh = document.createElement('canvas');
+      fresh.id = 'sim';
+      if (canvas && canvas.parentNode) canvas.parentNode.replaceChild(fresh, canvas);
+      canvas = fresh;
+      ctx2d = null;
+      imgData = null;
+      enableWorker();
+      running = false; setSimState('idle');
+      simInit(params.gridSize, params.seed, params.seedMode);
+      needsRender = true;
+    }
+
+    $('ctl-gpu').addEventListener('change', () => {
+      const want = $('ctl-gpu').checked;
+      params.useGPU = want;
+      if (want) {
+        if (!enableGPU()) {
+          params.useGPU = false;
+          $('ctl-gpu').checked = false;
+          showNotice('GPU not available',
+            'Organica could not start the WebGL/GPU simulation on this device — it is missing ' +
+            'WebGL or floating-point texture support. The simulation continues on the CPU.');
+        }
+      } else {
+        disableGPU();
+      }
+    });
+
+    function showNotice(title, body) {
+      $('notice-title').textContent = title;
+      $('notice-body').textContent = body;
+      $('notice-modal').classList.add('visible');
+    }
 
     $('ctl-seedpalette').addEventListener('change', () => {
       params.seedPalette = $('ctl-seedpalette').value;
@@ -1591,8 +1670,6 @@ function buildColorLut() {
       seedLutKeyGPU: '',
       colorTex: null,
       colorBuf: null,
-      spreadTex: null,
-      spreadBuf: null,
       size: 0,
       canReadback: false
     };
@@ -1644,7 +1721,6 @@ function buildColorLut() {
       uniform sampler2D uLut;
       uniform sampler2D uSeedLut;
       uniform sampler2D uColor;     // static per-cell territory hue
-      uniform sampler2D uSpread;    // colour-spread field S (how far colour reached)
       uniform float uColored;
       uniform float uVRef;
       uniform float uColorBrightness;
@@ -1652,16 +1728,19 @@ function buildColorLut() {
       void main() {
         vec4 st = texture2D(uState, v_texCoord);
         float V = st.g;
-        float sp = clamp(texture2D(uSpread, v_texCoord).r, 0.0, 1.0); // spread reached
         float c = texture2D(uColor, v_texCoord).r;   // baked territory hue
         vec3 mono = texture2D(uLut, vec2(V * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
         vec3 col = mono;
-        if (uColored > 0.5 && sp > 0.0) {
+        // Pattern presence gates the colour: background stays the plain V
+        // palette; grown structure is tinted by its territory colour. This is
+        // computed entirely on-chip from V — no CPU readback needed.
+        float vref = V <= 0.0 ? 0.0 : (V >= uVRef ? 1.0 : V / uVRef);
+        if (uColored > 0.5 && vref > 0.0) {
           vec3 sc = texture2D(uSeedLut, vec2(c * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
           float vbase = clamp(V / uVRef, 0.0, 1.0);
           float vn = (1.0 - uColorBrightness) + uColorBrightness * vbase;
           vec3 colored = sc * vn;
-          col = mix(mono, colored, sp);              // front advances along growth
+          col = mix(mono, colored, vref);
         }
         gl_FragColor = vec4(col, 1.0);
       }`;
@@ -1669,7 +1748,17 @@ function buildColorLut() {
     function setCpuMode() {
       if (!gpu.active) return;
       gpu.active = false;
+      // The GPU had taken over the #sim canvas as a WebGL surface. Swap it
+      // back to a fresh 2D canvas so the CPU/worker renderer can blit again.
+      const fresh = document.createElement('canvas');
+      fresh.id = 'sim';
+      if (canvas && canvas.parentNode) canvas.parentNode.replaceChild(fresh, canvas);
+      canvas = fresh;
+      ctx2d = null;
+      imgData = null;
       document.getElementById('mode-banner').classList.add('visible');
+      enableWorker();
+      simInit(params.gridSize, params.seed, params.seedMode);
     }
 
     function glShader(gl, type, src) {
@@ -1739,12 +1828,10 @@ function buildColorLut() {
     }
 
     function tryInitGPU() {
-      // GPU path disabled: the CPU core is fully functional and, unlike the GPU
-      // path, keeps the V field on the CPU where the colour-spread step can read
-      // it (GPU float readback is unreliable across drivers). Force CPU mode.
-      gpu.active = false;
-      return;
-
+      // Attempt to bring up the WebGL/GPU simulation path. Returns true on
+      // success (gpu.active set, #sim becomes a WebGL canvas) and false if the
+      // device/driver lacks the required float-texture support. The caller
+      // seeds state (initGrid + upload) afterwards.
       let gl = null;
       const holder = document.createElement('canvas'); // detached probe canvas
       try {
@@ -1799,21 +1886,12 @@ function buildColorLut() {
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 
-        // Dynamic colour-spread texture (RGBA bytes; R = S, 0..1)
-        const spreadTex = gl.createTexture();
-        gl.bindTexture(gl.TEXTURE_2D, spreadTex);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-
         gpu.gl = gl;
         gpu.progSim = progSim;
         gpu.progDisp = progDisp;
         gpu.lutTex = lutTex;
         gpu.seedLutTex = seedLutTex;
         gpu.colorTex = colorTex;
-        gpu.spreadTex = spreadTex;
         gpu.uniSim = {
           state: gl.getUniformLocation(progSim, 'uState'),
           f: gl.getUniformLocation(progSim, 'uF'),
@@ -1828,7 +1906,6 @@ function buildColorLut() {
           lut: gl.getUniformLocation(progDisp, 'uLut'),
           seedLut: gl.getUniformLocation(progDisp, 'uSeedLut'),
           color: gl.getUniformLocation(progDisp, 'uColor'),
-          spread: gl.getUniformLocation(progDisp, 'uSpread'),
           colored: gl.getUniformLocation(progDisp, 'uColored'),
           vref: gl.getUniformLocation(progDisp, 'uVRef'),
           colorBrightness: gl.getUniformLocation(progDisp, 'uColorBrightness')
@@ -1850,11 +1927,11 @@ function buildColorLut() {
           setCpuMode();
         }, false);
 
-        uploadState();
-        gpuUploadColor();
+        return true;
       } catch (err) {
+        console.warn('Organica GPU init failed:', err && err.message);
         gpu.active = false;
-        document.getElementById('mode-banner').classList.add('visible');
+        return false;
       }
     }
 
@@ -1983,9 +2060,6 @@ function buildColorLut() {
       gl.activeTexture(gl.TEXTURE3);
       gl.bindTexture(gl.TEXTURE_2D, gpu.colorTex);
       gl.uniform1i(gpu.uniDisp.color, 3);
-      gl.activeTexture(gl.TEXTURE4);
-      gl.bindTexture(gl.TEXTURE_2D, gpu.spreadTex);
-      gl.uniform1i(gpu.uniDisp.spread, 4);
       gl.uniform1f(gpu.uniDisp.colored, params.coloredSeeds ? 1.0 : 0.0);
       gl.uniform1f(gpu.uniDisp.vref, 0.4);
       gl.uniform1f(gpu.uniDisp.colorBrightness, params.seedColorBrightness);
@@ -2210,12 +2284,17 @@ function buildColorLut() {
 
     btnStep.addEventListener('click', () => {
       if (running) return;
-      if (sim.useWorker) {
+      if (gpu.active) {
+        gpuStep(1);          // exactly one iteration on the GPU
+        frameCount++;
+        gpuDisplay();
+        frameEl.textContent = 'Frame: ' + frameCount;
+      } else if (sim.useWorker) {
         simStep();
       } else {
         tick(params);       // exactly one iteration
         frameCount++;
-        if (gpu.active) gpuDisplay(); else renderCPU();
+        renderCPU();
         frameEl.textContent = 'Frame: ' + frameCount;
       }
     });
@@ -2283,6 +2362,14 @@ function buildColorLut() {
         $('about-modal').classList.remove('visible');
     });
 
+    // --- Notice dialog (shared modal) ---
+    $('btn-notice-ok').addEventListener('click', () =>
+      $('notice-modal').classList.remove('visible'));
+    $('notice-modal').addEventListener('click', (e) => {
+      if (e.target === $('notice-modal'))
+        $('notice-modal').classList.remove('visible');
+    });
+
     // --- URL hash persistence (spec §8) ---
     // Compact base64 of the whole params object. Written via a short diff
     // interval rather than from every listener — robust to future controls.
@@ -2305,7 +2392,8 @@ function buildColorLut() {
         const obj = JSON.parse(decodeURIComponent(escape(atob(location.hash.slice(1)))));
         const keys = ['f','k','Du','Dv','stepsPerFrame','gridSize',
                       'seed','seedMode','palette','invert','colorBias','vibrance',
-                      'coloredSeeds','seedColorRandom','seedPalette','seedColorDiff','seedColorDiffusion','seedColorOffset','seedColorBrightness'];
+                      'coloredSeeds','seedColorRandom','seedPalette','seedColorDiff','seedColorDiffusion','seedColorOffset','seedColorBrightness',
+                      'useGPU'];
         let touched = false;
         for (const kk of keys) {
           if (kk in obj) { params[kk] = obj[kk]; touched = true; }
@@ -2329,6 +2417,7 @@ function buildColorLut() {
       $('ctl-invert').checked = !!params.invert;
       $('ctl-colored').checked = !!params.coloredSeeds;
       $('ctl-colorrandom').checked = !!params.seedColorRandom;
+      $('ctl-gpu').checked = !!params.useGPU;
       $('ctl-seedpalette').value = params.seedPalette;
       applyColoredEnabled();
     }
@@ -2389,8 +2478,17 @@ function buildColorLut() {
     }
 
     function simInit(size, seed, mode) {
-      if (sim.useWorker) sim.worker.postMessage({ cmd: 'init', size, seed, mode, params });
-      else initGrid(size, size, seed, mode);
+      if (gpu.active) {
+        initGrid(size, size, seed, mode);
+        gpuEnsureSize();
+        uploadState();
+        gpuUploadColor();
+        gpuDisplay();
+      } else if (sim.useWorker) {
+        sim.worker.postMessage({ cmd: 'init', size, seed, mode, params });
+      } else {
+        initGrid(size, size, seed, mode);
+      }
     }
     function simSetRunning(r) {
       if (sim.useWorker) sim.worker.postMessage({ cmd: 'setRunning', running: r });
@@ -2399,7 +2497,8 @@ function buildColorLut() {
       if (sim.useWorker) sim.worker.postMessage({ cmd: 'step' });
     }
     function simRecolor() {
-      if (sim.useWorker) sim.worker.postMessage({ cmd: 'recolor', params });
+      if (gpu.active) { assignColors(); gpuUploadColor(); gpuDisplay(); }
+      else if (sim.useWorker) sim.worker.postMessage({ cmd: 'recolor', params });
       else recolor();
     }
     function simSetParams() {
@@ -2424,7 +2523,11 @@ function buildColorLut() {
         // When the Web Worker owns the simulation, it drives frameCount and
         // pushes V/C snapshots; the main thread only paints the latest one.
         // Otherwise run the ticks inline here.
-        if (running && !sim.useWorker) {
+        if (running && gpu.active) {
+          gpuStep(params.stepsPerFrame);
+          frameCount += params.stepsPerFrame;
+          fpsFrames++;
+        } else if (running && !sim.useWorker) {
           for (let s = 0; s < params.stepsPerFrame; s++) tick(params);
           frameCount++;
           fpsFrames++;
@@ -2447,8 +2550,17 @@ function buildColorLut() {
     }
     syncUIFromParams();
     enableWorker(); // uses Web Worker for the sim when available, else inline
+    // Optional opt-in GPU path. If requested but unavailable, revert the flag,
+    // uncheck the box, and notify — the worker/CPU core keeps running.
+    if (params.useGPU && !tryInitGPU()) {
+      params.useGPU = false;
+      const gpuBox = $('ctl-gpu');
+      if (gpuBox) gpuBox.checked = false;
+      showNotice('GPU not available',
+        'Organica could not start the WebGL/GPU simulation on this device — it is missing ' +
+        'WebGL or floating-point texture support. The simulation is running on the CPU.');
+    }
     simInit(params.gridSize, params.seed, params.seedMode);
-    tryInitGPU();
     requestAnimationFrame(frame);
   </script>
 </body>

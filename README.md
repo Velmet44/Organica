@@ -4,7 +4,7 @@
 
 Organica is a browser-based **Gray-Scott reaction-diffusion pattern engine**: it simulates two virtual chemicals that react and diffuse across a grid, spontaneously organising themselves into the spots, stripes, labyrinths, and coral-like branching patterns seen on animal skins, seashells, and corals. Every parameter — feed rate, kill rate, diffusion, seed pattern, colour palette — can be tuned live while the simulation runs, and any run can be exported as a print-quality PNG up to 4096×4096.
 
-> **Rendering note.** The simulation currently runs on the **CPU core** with Canvas2D rendering. A WebGL/GPU render path still exists in the source but is disabled (the engine forces CPU mode) so that the colour pipeline can read the live `V` field directly. Re-enabling GPU acceleration is the main performance work item — see the optimisation notes in the repository.
+> **Rendering note.** The simulation runs on the **CPU core** with Canvas2D rendering by default. There is also an optional **WebGL/GPU** path: tick *Use GPU (WebGL)* in the Simulation panel to run the reaction-diffusion step on the GPU. If WebGL or floating-point textures are unavailable on the device, Organica shows a notice and continues on the CPU. The GPU path keeps the colour pipeline fully on-chip (colouring is computed from `V` in the display shader) so no CPU readback is needed.
 
 ## Running Locally
 
@@ -31,6 +31,7 @@ Every parameter is live — moving a slider affects the running simulation on th
 | Diffusion U `Du` | 0.05 – 0.40 | 0.210 | Spread speed of U across the grid. |
 | Diffusion V `Dv` | 0.01 – 0.25 | 0.105 | Spread speed of V (naturally lower than U in interesting regimes). |
 | Steps / Frame | 1 – 40 | 6 | Simulation ticks per animation frame — higher = faster evolution. |
+| Use GPU (WebGL) | on / off | off | Runs the simulation on the GPU via WebGL. Falls back to the CPU with a notice if WebGL/float textures are unavailable. |
 | Colour Bias | 0.0 – 1.0 | 0.5 | Gamma-like midpoint shift; brightens or darkens midtones without touching black/white points. |
 | Vibrance | 0.0 – 2.0 | 1.0 | Boosts saturation of the colour output (0 = desaturated, 1 = natural, 2 = vivid). |
 | Invert Colours | on / off | off | Swaps low and high ends of the palette. |
