@@ -1588,12 +1588,19 @@ function buildColorLut() {
       const want = $('ctl-gpu').checked;
       params.useGPU = want;
       if (want) {
-        if (!enableGPU()) {
+         if (!enableGPU()) {
           params.useGPU = false;
           $('ctl-gpu').checked = false;
+          const why = gpu.failReason || 'WebGL2 / integer textures unsupported';
           showNotice('GPU not available',
-            'Organica could not start the WebGL/GPU simulation on this device — it is missing ' +
-            'WebGL or floating-point texture support. The simulation continues on the CPU.');
+            'Organica could not start the reproducible GPU simulation on this device — ' +
+            'reason: ' + why + '. The simulation continues on the CPU.');
+        } else if (gpu.mode === 'float') {
+          showNotice('GPU (floating-point) active',
+            'Your device lacks EXT_color_buffer_integer, so Organica is running the ' +
+            'floating-point GPU path instead. This is fast, but results are only ' +
+            'reproducible on THIS device/driver — not bit-exact across different GPUs. ' +
+            'For guaranteed 1:1 contest entries, untick "Use GPU" to run on the CPU.');
         }
       } else {
         disableGPU();
@@ -1647,17 +1654,30 @@ function buildColorLut() {
 
     $('btn-reset').addEventListener('click', reseed);
 
-    /* ---------- 6. GPU renderer (WebGL1, ping-pong FBOs) ---------- */
+    /* ---------- 6. GPU renderer (WebGL2, integer fixed-point) ---------- */
+    // REPRODUCIBLE GPU: the simulation runs entirely in integer fixed-point
+    // arithmetic on RGBA32I textures, so every op is exactly specified by the
+    // GLSL ES 3.00 integer rules and therefore produces BIT-IDENTICAL state on
+    // every WebGL2 GPU/driver. The seed string bakes the identical initial
+    // U/V grid (uploaded as integers), so "same seed + settings" reproduces the
+    // exact same pattern on any machine — required for the contest.
+    //
     // Strategy: the whole pipeline is built on a detached canvas first. Only
-    // when EVERY step succeeds (context, OES_texture_float, highp fragment
-    // precision, shaders, float render targets) is that canvas swapped into
-    // the DOM as #sim — a canvas can hold only one context type, so the CPU
-    // path stays untouched if any probe fails.
-    // Toroidal boundaries: WebGL1 forbids REPEAT on NPOT textures (grid 768),
-    // so neighbour lookups wrap via fract() in the shader — same boundary
-    // condition, valid for every grid size.
+    // when EVERY step succeeds (WebGL2 context, EXT_color_buffer_integer,
+    // shaders, integer render targets) is that canvas swapped into the DOM as
+    // #sim — a canvas can hold only one context type, so the CPU path stays
+    // untouched if any probe fails.
+    //
+    // State encodes U and V as integers scaled by SCALE (U*SCALE, V*SCALE).
+    // All reaction/diffusion math is done in that fixed-point domain; the only
+    // float stage left is the final 8-bit colour write, which is sub-1-LSB.
+    // Toroidal boundaries: neighbour lookups wrap via integer modulo in the
+    // shader — valid for every grid size.
+    const GPU_SCALE = 16384; // 1 << 14 — fixed-point resolution for U/V
     const gpu = {
       active: false,
+      mode: null,          // 'int' (reproducible) or 'float' (per-device only)
+      reproducible: false, // true only for the integer path
       gl: null,
       progSim: null, progDisp: null,
       uniSim: {}, uniDisp: {},
@@ -1671,78 +1691,171 @@ function buildColorLut() {
       colorTex: null,
       colorBuf: null,
       size: 0,
-      canReadback: false
+      scale: GPU_SCALE
     };
 
-    const VERT_SRC = `
-      attribute vec2 aPos;
-      varying vec2 v_texCoord;
+    const VERT_SRC = `#version 300 es
+      in vec2 aPos;
+      out vec2 v_uv;
       void main() {
-        v_texCoord = aPos * 0.5 + 0.5;
+        v_uv = aPos * 0.5 + 0.5;
         gl_Position = vec4(aPos, 0.0, 1.0);
       }`;
 
-    const SIM_FRAG_SRC = `
+    // Integer fixed-point Gray-Scott step. State texture is RGBA32I with
+    // R = U*SCALE, G = V*SCALE. No float math is used, so results are
+    // identical across all WebGL2 implementations.
+    const SIM_FRAG_SRC = `#version 300 es
+      precision highp int;
       precision highp float;
-      uniform sampler2D uState;
-      uniform float uF, uK, uDu, uDv, uDt;
-      uniform vec2 uTexel;
-      varying vec2 v_texCoord;
+      uniform highp isampler2D uState;
+      uniform int uF;     // f * SCALE
+      uniform int uK;     // k * SCALE
+      uniform int uDu;    // Du * SCALE
+      uniform int uDv;    // Dv * SCALE
+      out ivec4 outColor;
 
-      vec2 s(vec2 off) {
-        return texture2D(uState, fract(v_texCoord + off)).rg;
-      }
+      const int ORTHO = 3277;   // round(0.20 * 16384)
+      const int DIAG  = 819;    // round(0.05 * 16384)
+      const int CEN   = -16384; // round(-1.0 * 16384)
+      const int SH    = 14;     // log2(SCALE)
+
+      ivec2 wrap(ivec2 c, ivec2 sz) { return (c + sz) % sz; }
 
       void main() {
-        vec4 st = texture2D(uState, v_texCoord);
+        ivec2 sz = textureSize(uState, 0);
+        ivec2 p = ivec2(gl_FragCoord.xy);
+        ivec4 s = texelFetch(uState, p, 0);
+        int U = s.r;
+        int V = s.g;
+
+        int lapU = CEN * U;
+        int lapV = CEN * V;
+        ivec2 ord[4] = ivec2[4](ivec2(1,0), ivec2(-1,0), ivec2(0,1), ivec2(0,-1));
+        ivec2 dia[4] = ivec2[4](ivec2(1,1), ivec2(-1,1), ivec2(1,-1), ivec2(-1,-1));
+        for (int i = 0; i < 4; i++) {
+          ivec4 n = texelFetch(uState, wrap(p + ord[i], sz), 0);
+          lapU += ORTHO * n.r;
+          lapV += ORTHO * n.g;
+        }
+        for (int i = 0; i < 4; i++) {
+          ivec4 n = texelFetch(uState, wrap(p + dia[i], sz), 0);
+          lapU += DIAG * n.r;
+          lapV += DIAG * n.g;
+        }
+        lapU >>= SH;
+        lapV >>= SH;
+
+        int uv  = (U * V) >> SH;     // U*V*SCALE
+        int uvv = (uv * V) >> SH;    // U*V*V*SCALE
+
+        int dU = (uDu * lapU) - uvv + ((uF * (16384 - U)) >> SH);
+        int dV = (uDv * lapV) + uvv - (((uK + uF) * V) >> SH);
+
+        int Un = U + dU;
+        int Vn = V + dV;
+        Un = Un < 0 ? 0 : (Un > 16384 ? 16384 : Un);
+        Vn = Vn < 0 ? 0 : (Vn > 16384 ? 16384 : Vn);
+
+        outColor = ivec4(Un, Vn, 0, 1);
+      }`;
+
+    // Display: reads integer state, maps V to a palette byte via integer index
+    // (no float interpolation) and mixes colours with integer math. LUT/seed/
+    // colour textures are RGBA8UI so texelFetch returns EXACT bytes — no float
+    // round-trip. The only float step is the final 8-bit write (sub-1-LSB).
+    const DISP_FRAG_SRC = `#version 300 es
+      precision highp int;
+      precision highp float;
+      uniform highp isampler2D uState;  // R=U*SCALE, G=V*SCALE
+      uniform highp usampler2D uLut;    // 256x1 exact palette bytes
+      uniform highp usampler2D uSeedLut;
+      uniform highp usampler2D uColor;  // R = territory hue byte (0..255)
+      uniform int uColored;
+      uniform int uScale;
+      uniform int uVRef;                // vref * SCALE
+      uniform int uColorBrightness;     // *SCALE
+      out vec4 outColor;
+
+      void main() {
+        ivec2 p = ivec2(gl_FragCoord.xy);
+        ivec4 s = texelFetch(uState, p, 0);
+        int V = s.g;
+
+        int idx = (V * 255) / uScale;
+        idx = idx < 0 ? 0 : (idx > 255 ? 255 : idx);
+        ivec3 mono = ivec3(utexelFetch(uLut, ivec2(idx, 0), 0).rgb);
+
+        ivec3 col = mono;
+        if (uColored == 1) {
+          int hue = int(utexelFetch(uColor, p, 0).r);
+          int vref = (V * uScale) / uVRef;
+          vref = vref < 0 ? 0 : (vref > uScale ? uScale : vref);
+          if (vref > 0) {
+            ivec3 sc = ivec3(utexelFetch(uSeedLut, ivec2(hue, 0), 0).rgb);
+            // vn = (1 - B) + B * g,  with B=brightness, g=vref/uScale.
+            // bScaled carries vn in *SCALE units (0..uScale).
+            int bScaled = (uScale - uColorBrightness) + (uColorBrightness * vref) / uScale;
+            ivec3 colored = (sc * bScaled) / uScale;  // 0..255
+            col = mono + (colored - mono) * vref / uScale; // integer lerp (vref is *SCALE)
+          }
+        }
+        outColor = vec4(float(col.r) / 255.0, float(col.g) / 255.0, float(col.b) / 255.0, 1.0);
+      }`;
+
+    // Float fallback shaders (used when EXT_color_buffer_integer is missing but
+    // EXT_color_buffer_float is present). Same Gray-Scott equations, but state
+    // lives in RGBA32F and the math is IEEE-754 float — so results are only
+    // reproducible on the SAME device/driver, NOT bit-exact across GPUs.
+    const SIM_FRAG_SRC_FLOAT = `#version 300 es
+      precision highp float;
+      uniform sampler2D uState;
+      uniform float uF, uK, uDu, uDv, uDt, uTexelX, uTexelY;
+      in vec2 v_uv;
+      out vec4 outColor;
+      vec2 s(vec2 off) { return texture(uState, fract(v_uv + off)).rg; }
+      void main() {
+        vec4 st = texture(uState, v_uv);
         float U = st.r, V = st.g;
-
         vec2 lap = vec2(0.0);
-        lap += 0.20 * (s(vec2( uTexel.x, 0.0)) + s(vec2(-uTexel.x, 0.0)) +
-                       s(vec2(0.0,  uTexel.y)) + s(vec2(0.0, -uTexel.y)));
-        lap += 0.05 * (s(vec2( uTexel.x,  uTexel.y)) + s(vec2(-uTexel.x,  uTexel.y)) +
-                      s(vec2( uTexel.x, -uTexel.y)) + s(vec2(-uTexel.x, -uTexel.y)));
+        lap += 0.20 * (s(vec2( uTexelX, 0.0)) + s(vec2(-uTexelX, 0.0)) +
+                       s(vec2(0.0,  uTexelY)) + s(vec2(0.0, -uTexelY)));
+        lap += 0.05 * (s(vec2( uTexelX,  uTexelY)) + s(vec2(-uTexelX,  uTexelY)) +
+                      s(vec2( uTexelX, -uTexelY)) + s(vec2(-uTexelX, -uTexelY)));
         lap -= st.rg;
-
         float reaction = U * V * V;
         float dU = uDu * lap.r - reaction + uF * (1.0 - U);
         float dV = uDv * lap.g + reaction - (uF + uK) * V;
-
-        // Colour (hue + spread) is computed on the CPU and uploaded as separate
-        // textures, so the simulation state only carries U/V.
-        gl_FragColor = vec4(clamp(U + uDt * dU, 0.0, 1.0),
-                            clamp(V + uDt * dV, 0.0, 1.0),
-                            0.0, 1.0);
+        outColor = vec4(clamp(U + uDt * dU, 0.0, 1.0),
+                        clamp(V + uDt * dV, 0.0, 1.0), 0.0, 1.0);
       }`;
 
-    const DISP_FRAG_SRC = `
+    const DISP_FRAG_SRC_FLOAT = `#version 300 es
       precision highp float;
       uniform sampler2D uState;
       uniform sampler2D uLut;
       uniform sampler2D uSeedLut;
-      uniform sampler2D uColor;     // static per-cell territory hue
+      uniform sampler2D uColor;
       uniform float uColored;
       uniform float uVRef;
       uniform float uColorBrightness;
-      varying vec2 v_texCoord;
+      in vec2 v_uv;
+      out vec4 outColor;
       void main() {
-        vec4 st = texture2D(uState, v_texCoord);
+        vec4 st = texture(uState, v_uv);
         float V = st.g;
-        float c = texture2D(uColor, v_texCoord).r;   // baked territory hue
-        vec3 mono = texture2D(uLut, vec2(V * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
+        float c = texture(uColor, v_uv).r;
+        vec3 mono = texture(uLut, vec2(V * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
         vec3 col = mono;
-        // Pattern presence gates the colour: background stays the plain V
-        // palette; grown structure is tinted by its territory colour. This is
-        // computed entirely on-chip from V — no CPU readback needed.
         float vref = V <= 0.0 ? 0.0 : (V >= uVRef ? 1.0 : V / uVRef);
         if (uColored > 0.5 && vref > 0.0) {
-          vec3 sc = texture2D(uSeedLut, vec2(c * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
+          vec3 sc = texture(uSeedLut, vec2(c * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
           float vbase = clamp(V / uVRef, 0.0, 1.0);
           float vn = (1.0 - uColorBrightness) + uColorBrightness * vbase;
           vec3 colored = sc * vn;
           col = mix(mono, colored, vref);
         }
-        gl_FragColor = vec4(col, 1.0);
+        outColor = vec4(col, 1.0);
       }`;
 
     function setCpuMode() {
@@ -1766,9 +1879,10 @@ function buildColorLut() {
       gl.shaderSource(sh, src);
       gl.compileShader(sh);
       if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
-        console.warn('Organica shader error:', gl.getShaderInfoLog(sh));
+        const log = gl.getShaderInfoLog(sh);
+        console.warn('Organica shader error:', log);
         gl.deleteShader(sh);
-        return null;
+        throw new Error('shader compile failed: ' + (log || 'unknown'));
       }
       return sh;
     }
@@ -1776,15 +1890,15 @@ function buildColorLut() {
     function glProgram(gl, fragSrc) {
       const vs = glShader(gl, gl.VERTEX_SHADER, VERT_SRC);
       const fs = glShader(gl, gl.FRAGMENT_SHADER, fragSrc);
-      if (!vs || !fs) return null;
       const prog = gl.createProgram();
       gl.attachShader(prog, vs);
       gl.attachShader(prog, fs);
       gl.bindAttribLocation(prog, 0, 'aPos'); // shared quad layout
       gl.linkProgram(prog);
       if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-        console.warn('Organica link error:', gl.getProgramInfoLog(prog));
-        return null;
+        const log = gl.getProgramInfoLog(prog);
+        console.warn('Organica link error:', log);
+        throw new Error('shader link failed: ' + (log || 'unknown'));
       }
       return prog;
     }
@@ -1796,7 +1910,11 @@ function buildColorLut() {
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.FLOAT, null);
+        if (gpu.mode === 'int') {
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32I, w, h, 0, gl.RGBA_INTEGER, gl.INT, null);
+        } else {
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, w, h, 0, gl.RGBA, gl.FLOAT, null);
+        }
       };
       for (let i = 0; i < 2; i++) {
         gpu.tex[i] = gl.createTexture();
@@ -1832,23 +1950,24 @@ function buildColorLut() {
       // success (gpu.active set, #sim becomes a WebGL canvas) and false if the
       // device/driver lacks the required float-texture support. The caller
       // seeds state (initGrid + upload) afterwards.
-      let gl = null;
+       let gl = null;
       const holder = document.createElement('canvas'); // detached probe canvas
       try {
-        gl = holder.getContext('webgl', { preserveDrawingBuffer: true }) ||
-             holder.getContext('experimental-webgl', { preserveDrawingBuffer: true });
-        if (!gl) throw new Error('no webgl context');
-        if (!gl.getExtension('OES_texture_float')) throw new Error('no OES_texture_float');
+        gl = holder.getContext('webgl2', { preserveDrawingBuffer: true });
+        if (!gl) throw new Error('no webgl2 context');
+        // Primary: integer fixed-point (bit-exact across GPUs) needs
+        // EXT_color_buffer_integer. Fallback: float (EXT_color_buffer_float) is
+        // only reproducible on the same device/driver.
+        if (gl.getExtension('EXT_color_buffer_integer')) {
+          gpu.mode = 'int'; gpu.reproducible = true;
+        } else if (gl.getExtension('EXT_color_buffer_float')) {
+          gpu.mode = 'float'; gpu.reproducible = false;
+        } else {
+          throw new Error('no EXT_color_buffer_integer or EXT_color_buffer_float');
+        }
 
-        // highp fragment precision is optional in WebGL1 and required here
-        const hp = gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.HIGH_FLOAT);
-        if (!hp || hp.precision === 0) throw new Error('no highp fragment precision');
-
-        // WEBGL_color_buffer_float only gates guaranteed float READBACK
-        gpu.canReadback = !!gl.getExtension('WEBGL_color_buffer_float');
-
-        const progSim = glProgram(gl, SIM_FRAG_SRC);
-        const progDisp = glProgram(gl, DISP_FRAG_SRC);
+        const progSim = glProgram(gl, gpu.mode === 'int' ? SIM_FRAG_SRC : SIM_FRAG_SRC_FLOAT);
+        const progDisp = glProgram(gl, gpu.mode === 'int' ? DISP_FRAG_SRC : DISP_FRAG_SRC_FLOAT);
         if (!progSim || !progDisp) throw new Error('shader compile/link failed');
         if (!gpuCreateTargets(gl, params.gridSize, params.gridSize)) {
           throw new Error('float render targets incomplete');
@@ -1862,21 +1981,21 @@ function buildColorLut() {
         gl.enableVertexAttribArray(0);
         gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
-        // LUT texture (256x1 RGBA bytes)
+        // LUT texture (256x1 RGBA8UI exact bytes)
         const lutTex = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, lutTex);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 
-        // Seed-colour LUT texture (256x1 RGBA bytes)
+        // Seed-colour LUT texture (256x1 RGBA8UI exact bytes)
         const seedLutTex = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, seedLutTex);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 
         // Static per-cell territory colour texture (RGBA bytes; R = colour coord)
         const colorTex = gl.createTexture();
@@ -1885,6 +2004,15 @@ function buildColorLut() {
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+        // Float mode: LUTs interpolate smoothly, so use LINEAR filtering there.
+        if (gpu.mode === 'float') {
+          for (const t of [lutTex, seedLutTex]) {
+            gl.bindTexture(gl.TEXTURE_2D, t);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+          }
+        }
 
         gpu.gl = gl;
         gpu.progSim = progSim;
@@ -1897,9 +2025,7 @@ function buildColorLut() {
           f: gl.getUniformLocation(progSim, 'uF'),
           k: gl.getUniformLocation(progSim, 'uK'),
           du: gl.getUniformLocation(progSim, 'uDu'),
-          dv: gl.getUniformLocation(progSim, 'uDv'),
-          dt: gl.getUniformLocation(progSim, 'uDt'),
-          texel: gl.getUniformLocation(progSim, 'uTexel')
+          dv: gl.getUniformLocation(progSim, 'uDv')
         };
         gpu.uniDisp = {
           state: gl.getUniformLocation(progDisp, 'uState'),
@@ -1907,9 +2033,15 @@ function buildColorLut() {
           seedLut: gl.getUniformLocation(progDisp, 'uSeedLut'),
           color: gl.getUniformLocation(progDisp, 'uColor'),
           colored: gl.getUniformLocation(progDisp, 'uColored'),
+          scale: gl.getUniformLocation(progDisp, 'uScale'),
           vref: gl.getUniformLocation(progDisp, 'uVRef'),
           colorBrightness: gl.getUniformLocation(progDisp, 'uColorBrightness')
         };
+        if (gpu.mode === 'float') {
+          gpu.uniSim.dt = gl.getUniformLocation(progSim, 'uDt');
+          gpu.uniSim.texelX = gl.getUniformLocation(progSim, 'uTexelX');
+          gpu.uniSim.texelY = gl.getUniformLocation(progSim, 'uTexelY');
+        }
 
         // adopt the working context: swap the GPU-backed canvas in as #sim
         holder.id = 'sim';
@@ -1929,20 +2061,43 @@ function buildColorLut() {
 
         return true;
       } catch (err) {
-        console.warn('Organica GPU init failed:', err && err.message);
         gpu.active = false;
+        gpu.mode = null;
+        gpu.failReason = (err && err.message) ? err.message : 'unknown failure';
+        console.warn('Organica GPU init failed:', gpu.failReason);
         return false;
       }
     }
 
     function packState() {
       const n = W * H;
+      const S = gpu.scale;
+      const out = new Int32Array(n * 4);
+      for (let i = 0, j = 0; i < n; i++, j += 4) {
+        let u = Math.round(U[i] * S);
+        let v = Math.round(V[i] * S);
+        if (u < 0) u = 0; else if (u > S) u = S;
+        if (v < 0) v = 0; else if (v > S) v = S;
+        out[j] = u;
+        out[j + 1] = v;
+        out[j + 2] = 0;
+        out[j + 3] = 1;
+      }
+      return out;
+    }
+
+    function packStateFloat() {
+      const n = W * H;
       const out = new Float32Array(n * 4);
       for (let i = 0, j = 0; i < n; i++, j += 4) {
-        out[j] = U[i];
-        out[j + 1] = V[i];
-        out[j + 2] = 0.0;    // (hue + spread live in their own textures)
-        out[j + 3] = 1.0;
+        let u = U[i];
+        let v = V[i];
+        if (u < 0) u = 0; else if (u > 1) u = 1;
+        if (v < 0) v = 0; else if (v > 1) v = 1;
+        out[j] = u;
+        out[j + 1] = v;
+        out[j + 2] = 0;
+        out[j + 3] = 1;
       }
       return out;
     }
@@ -1951,7 +2106,11 @@ function buildColorLut() {
       const gl = gpu.gl;
       if (!gl || !gpu.size) return;
       gl.bindTexture(gl.TEXTURE_2D, gpu.tex[gpu.read]);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.FLOAT, packState());
+      if (gpu.mode === 'int') {
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32I, W, H, 0, gl.RGBA_INTEGER, gl.INT, packState());
+      } else {
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, W, H, 0, gl.RGBA, gl.FLOAT, packStateFloat());
+      }
     }
 
     function gpuEnsureSize() {
@@ -1972,8 +2131,10 @@ function buildColorLut() {
         rgba[i * 4 + 2] = colorLut[i * 3 + 2];
         rgba[i * 4 + 3] = 255;
       }
+      const lutInternal = gpu.mode === 'int' ? gl.RGBA8UI : gl.RGBA8;
+      const lutFmt = gpu.mode === 'int' ? gl.RGBA_INTEGER : gl.RGBA;
       gl.bindTexture(gl.TEXTURE_2D, gpu.lutTex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+      gl.texImage2D(gl.TEXTURE_2D, 0, lutInternal, 256, 1, 0, lutFmt, gl.UNSIGNED_BYTE, rgba);
       gpu.lutKeyGPU = lutKey;
 
       // seed-colour LUT
@@ -1985,7 +2146,7 @@ function buildColorLut() {
         srgba[i * 4 + 3] = 255;
       }
       gl.bindTexture(gl.TEXTURE_2D, gpu.seedLutTex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, srgba);
+      gl.texImage2D(gl.TEXTURE_2D, 0, lutInternal, 256, 1, 0, lutFmt, gl.UNSIGNED_BYTE, srgba);
       gpu.seedLutKeyGPU = seedLutKey;
     }
 
@@ -2003,22 +2164,33 @@ function buildColorLut() {
         buf[j + 3] = 255;
       }
       gl.bindTexture(gl.TEXTURE_2D, gpu.colorTex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+      const colInternal = gpu.mode === 'int' ? gl.RGBA8UI : gl.RGBA8;
+      const colFmt = gpu.mode === 'int' ? gl.RGBA_INTEGER : gl.RGBA;
+      gl.texImage2D(gl.TEXTURE_2D, 0, colInternal, W, H, 0, colFmt, gl.UNSIGNED_BYTE, buf);
     }
 
     function gpuStep(steps) {
       const gl = gpu.gl;
       if (!gl || !gpu.size) return;
+      const S = gpu.scale;
       gl.useProgram(gpu.progSim);
       gl.viewport(0, 0, W, H);
       gl.uniform1i(gpu.uniSim.state, 0);
       gl.activeTexture(gl.TEXTURE0);
-      gl.uniform1f(gpu.uniSim.f, params.f);
-      gl.uniform1f(gpu.uniSim.k, params.k);
-      gl.uniform1f(gpu.uniSim.du, params.Du);
-      gl.uniform1f(gpu.uniSim.dv, params.Dv);
-      gl.uniform1f(gpu.uniSim.dt, 1.0); // spec: fixed timestep
-      gl.uniform2f(gpu.uniSim.texel, 1 / W, 1 / H);
+      if (gpu.mode === 'int') {
+        gl.uniform1i(gpu.uniSim.f, Math.round(params.f * S));
+        gl.uniform1i(gpu.uniSim.k, Math.round(params.k * S));
+        gl.uniform1i(gpu.uniSim.du, Math.round(params.Du * S));
+        gl.uniform1i(gpu.uniSim.dv, Math.round(params.Dv * S));
+      } else {
+        gl.uniform1f(gpu.uniSim.f, params.f);
+        gl.uniform1f(gpu.uniSim.k, params.k);
+        gl.uniform1f(gpu.uniSim.du, params.Du);
+        gl.uniform1f(gpu.uniSim.dv, params.Dv);
+        gl.uniform1f(gpu.uniSim.dt, 1.0);
+        gl.uniform1f(gpu.uniSim.texelX, 1 / W);
+        gl.uniform1f(gpu.uniSim.texelY, 1 / H);
+      }
 
       for (let i = 0; i < steps; i++) {
         const write = 1 - gpu.read;
@@ -2060,9 +2232,16 @@ function buildColorLut() {
       gl.activeTexture(gl.TEXTURE3);
       gl.bindTexture(gl.TEXTURE_2D, gpu.colorTex);
       gl.uniform1i(gpu.uniDisp.color, 3);
-      gl.uniform1f(gpu.uniDisp.colored, params.coloredSeeds ? 1.0 : 0.0);
-      gl.uniform1f(gpu.uniDisp.vref, 0.4);
-      gl.uniform1f(gpu.uniDisp.colorBrightness, params.seedColorBrightness);
+      if (gpu.mode === 'int') {
+        gl.uniform1i(gpu.uniDisp.colored, params.coloredSeeds ? 1 : 0);
+        gl.uniform1i(gpu.uniDisp.scale, gpu.scale);
+        gl.uniform1i(gpu.uniDisp.vref, Math.round(0.4 * gpu.scale));
+        gl.uniform1i(gpu.uniDisp.colorBrightness, Math.round(params.seedColorBrightness * gpu.scale));
+      } else {
+        gl.uniform1f(gpu.uniDisp.colored, params.coloredSeeds ? 1.0 : 0.0);
+        gl.uniform1f(gpu.uniDisp.vref, 0.4);
+        gl.uniform1f(gpu.uniDisp.colorBrightness, params.seedColorBrightness);
+      }
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }
 
@@ -2552,13 +2731,22 @@ function buildColorLut() {
     enableWorker(); // uses Web Worker for the sim when available, else inline
     // Optional opt-in GPU path. If requested but unavailable, revert the flag,
     // uncheck the box, and notify — the worker/CPU core keeps running.
-    if (params.useGPU && !tryInitGPU()) {
-      params.useGPU = false;
-      const gpuBox = $('ctl-gpu');
-      if (gpuBox) gpuBox.checked = false;
-      showNotice('GPU not available',
-        'Organica could not start the WebGL/GPU simulation on this device — it is missing ' +
-        'WebGL or floating-point texture support. The simulation is running on the CPU.');
+    if (params.useGPU) {
+      if (!tryInitGPU()) {
+        params.useGPU = false;
+        const gpuBox = $('ctl-gpu');
+        if (gpuBox) gpuBox.checked = false;
+        const why = gpu.failReason || 'WebGL2 / integer textures unsupported';
+        showNotice('GPU not available',
+          'Organica could not start the reproducible GPU simulation on this device — ' +
+          'reason: ' + why + '. The simulation is running on the CPU.');
+      } else if (gpu.mode === 'float') {
+        showNotice('GPU (floating-point) active',
+          'Your device lacks EXT_color_buffer_integer, so Organica is running the ' +
+          'floating-point GPU path instead. This is fast, but results are only ' +
+          'reproducible on THIS device/driver — not bit-exact across different GPUs. ' +
+          'For guaranteed 1:1 contest entries, untick "Use GPU" to run on the CPU.');
+      }
     }
     simInit(params.gridSize, params.seed, params.seedMode);
     requestAnimationFrame(frame);
