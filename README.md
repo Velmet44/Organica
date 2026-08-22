@@ -13,6 +13,13 @@ Organica is a browser-based **Gray-Scott reaction-diffusion pattern engine**: it
 
 Any modern browser works (Chrome, Firefox, Edge, Safari).
 
+> **Performance note.** For the best experience, open the page through a local
+> server (e.g. `serve.bat`) rather than `file://`. Served over HTTP the
+> simulation runs in a **Web Worker** (`sim-worker.js`), keeping the UI fully
+> responsive; opened directly from disk the browser blocks Workers for security,
+> so it automatically falls back to running the simulation inline on the main
+> thread. Both paths are functionally identical.
+
 ## Parameters
 
 Every parameter is live — moving a slider affects the running simulation on the very next tick, no reset needed (except Seed / Grid Size / Seed Pattern, which repaint the grid).
@@ -23,7 +30,7 @@ Every parameter is live — moving a slider affects the running simulation on th
 | Kill Rate `k` | 0.045 – 0.075 | 0.062 | How fast chemical V is removed. Tiny changes (±0.001) produce wildly different patterns. |
 | Diffusion U `Du` | 0.05 – 0.40 | 0.210 | Spread speed of U across the grid. |
 | Diffusion V `Dv` | 0.01 – 0.25 | 0.105 | Spread speed of V (naturally lower than U in interesting regimes). |
-| Steps / Frame | 1 – 40 | 10 | Simulation ticks per animation frame — higher = faster evolution. |
+| Steps / Frame | 1 – 40 | 6 | Simulation ticks per animation frame — higher = faster evolution. |
 | Colour Bias | 0.0 – 1.0 | 0.5 | Gamma-like midpoint shift; brightens or darkens midtones without touching black/white points. |
 | Vibrance | 0.0 – 2.0 | 1.0 | Boosts saturation of the colour output (0 = desaturated, 1 = natural, 2 = vivid). |
 | Invert Colours | on / off | off | Swaps low and high ends of the palette. |
@@ -120,7 +127,7 @@ Every parameter change updates the URL hash with a compact base64-encoded parame
 
 Single `index.html` (~2360 lines): layout, styles, and clearly-sectioned script modules (PRNG → CPU sim → rendering → presets/seeding → GPU → export → transport → main loop).
 
-- **Simulation core**: two `Float32Array` grids for U and V, double-buffered and swapped each tick (never updated in place), with a 9-tap weighted Laplacian (0.20 cardinal / 0.05 diagonal weights) and toroidal wrapping via modulo indexing. Roughly 512² × 10 steps ≈ 2.6M cell-updates per frame in the default configuration.
+- **Simulation core**: two `Float32Array` grids for U and V, double-buffered and swapped each tick (never updated in place), with a 9-tap weighted Laplacian (0.20 cardinal / 0.05 diagonal weights) and toroidal wrapping via modulo indexing. By default the simulation runs on a **Web Worker** (off the main thread) and posts snapshots back for rendering, so the UI stays responsive even on low-end hardware; if Workers are unavailable it falls back to running inline. The default configuration is 512² × 6 steps ≈ 1.6M cell-updates per frame.
 - **Renderer**: the V field is mapped through a rebuilt-on-change 256-entry LUT (linear-RGB interpolation, optional invert/bias/vibrance); coloured-seed territory colours are blended in per cell, gated by pattern presence. Output goes to a Canvas2D `ImageData`.
 - **Colored Seeds**: a static Voronoi territory colour field `C` is computed when seeding (and re-derived live on colour changes); it lives entirely on the CPU and is never part of the simulation state, so recolouring can never disturb a running pattern.
 - **GPU path**: the WebGL1 ping-pong FBO pipeline is present but **currently disabled** (force CPU mode). Disabling it keeps the `V` field on the CPU where the colour pipeline reads it. Re-enabling it is the primary performance optimisation target.
@@ -128,7 +135,7 @@ Single `index.html` (~2360 lines): layout, styles, and clearly-sectioned script 
 ## Known Trade-offs
 
 - High-res re-render is pure-CPU by design (deterministic, loss-free). At 4096² each iteration is expensive, so long sessions exceed a minute to re-simulate; the progress modal and Cancel button keep this manageable, and smaller sizes are fast.
-- The CPU core is the default and only active renderer today, so large grids (1024²) or high steps/frame may run well below 60fps on lower-end hardware. The GPU path is intended to close that gap.
+- The simulation runs on the CPU (optionally in a Web Worker). On lower-end hardware, large grids (1024²) or high steps/frame may run well below 60fps; lowering Steps / Frame or Grid Size restores smoothness. The Web Worker keeps the UI responsive even while the simulation is CPU-bound. The GPU path is intended to close the remaining gap.
 
 ## Licence
 

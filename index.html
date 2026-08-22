@@ -695,7 +695,7 @@
       k: 0.062,             // kill rate
       Du: 0.21,             // diffusion rate of U
       Dv: 0.105,            // diffusion rate of V
-      stepsPerFrame: 10,    // simulation ticks per animation frame
+      stepsPerFrame: 6,     // simulation ticks per animation frame (low default: i3-friendly)
       gridSize: 512,
       seed: '',
       seedMode: 'spots',
@@ -720,6 +720,8 @@
     let cellSeed1 = null, cellSeed2 = null; // cached nearest/2nd-nearest seed per cell
     let frameCount = 0;
     let stabilityPrev = null;    // reused buffer for stability diff (avoids per-frame alloc)
+    let doStability = false;     // accumulate stability diff inside the render pass (avoids a 2nd full-grid loop)
+    let needsRender = true;      // skip redundant paused/idle re-renders
 
     const SEED_U = 0.5, SEED_V = 0.25;
 
@@ -1287,6 +1289,7 @@ function buildColorLut() {
     }
 
     function renderCPU() {
+      if (!V || W === 0) return;
       const key = params.palette + '|' + params.invert + '|' + params.colorBias + '|' + params.vibrance;
       if (key !== lutKey) buildColorLut();
       const sKey = params.seedPalette + '|' + params.invert;
@@ -1299,12 +1302,35 @@ function buildColorLut() {
         imgData = ctx.createImageData(W, H);
         const d0 = imgData.data;
         for (let j = 3; j < d0.length; j += 4) d0[j] = 255; // opaque alpha
+        if (!stabilityPrev || stabilityPrev.length !== W * H) stabilityPrev = new Float32Array(W * H);
       }
       const d = imgData.data;
+      const doStab = doStability;
+      let vDiff = 0;
       for (let i = 0, j = 0; i < W * H; i++, j += 4) {
         cellColor(i, d, j);
+        if (doStab) {
+          const dv = V[i] - stabilityPrev[i];
+          vDiff += dv < 0 ? -dv : dv;
+          stabilityPrev[i] = V[i];
+        }
       }
       ctx.putImageData(imgData, 0, 0);
+
+      // Stability auto-stop (folded in here so we pay only one full-grid pass).
+      if (doStab) {
+        doStability = false;
+        const avgChange = vDiff / (W * H);
+        if (avgChange < stableThreshold) {
+          stableCount++;
+          if (stableCount >= stableFrames) {
+            running = false;
+            setSimState('done');
+          }
+        } else {
+          stableCount = 0;
+        }
+      }
     }
 
     /* ---------- 5. UI — control panel wiring ---------- */
@@ -1355,8 +1381,10 @@ function buildColorLut() {
           // Brightness only rescales the existing colour field — no recompute.
           if (gpu.active) gpuDisplay(); else renderCPU();
         } else if (key === 'seedColorDiff' || key === 'seedColorOffset' || key === 'seedColorDiffusion') {
-          recolor();
+          simRecolor();
         }
+        simSetParams(); // keep the (optional) worker in sync
+        needsRender = true; // repaint even while paused
       });
     }
     SLIDERS.forEach(buildSliderRow);
@@ -1460,6 +1488,7 @@ function buildColorLut() {
 
     $('ctl-palette').addEventListener('change', () => {
       params.palette = $('ctl-palette').value; // LUT rebuilt on next render
+      needsRender = true;
     });
 
     $('ctl-invert').addEventListener('change', () => {
@@ -1488,14 +1517,14 @@ function buildColorLut() {
       applyColoredEnabled();
       if (W > 0) {
         if (gpu.active) { uploadState(); gpuDisplay(); }
-        else renderCPU();
+        else simRecolor();
       }
     });
 
     $('ctl-colorrandom').addEventListener('change', () => {
       params.seedColorRandom = $('ctl-colorrandom').checked;
       applyColoredEnabled();
-      recolor();
+      simRecolor();
     });
 
     $('ctl-seedpalette').addEventListener('change', () => {
@@ -1508,7 +1537,7 @@ function buildColorLut() {
       gpuLastV = null; // invalidate previous GPU snapshot
       running = false;
       setSimState('idle'); // wait for the user to press Start again
-      initGrid(params.gridSize, params.gridSize, params.seed, params.seedMode);
+      simInit(params.gridSize, params.seed, params.seedMode);
       if (gpu.active) {
         gpuEnsureSize();
         uploadState();
@@ -2006,6 +2035,9 @@ function buildColorLut() {
       if (exporting) return;
       exporting = true;
       loopSuspended = true;
+      const wasRunning = (simState === 'running');
+      ignoreWorkerFrames = true;       // drop any frames the (paused) worker emits
+      if (sim.useWorker) simSetRunning(false);
 
       const exParams = Object.assign({}, params);
       const size = parseInt($('ctl-exsize').value, 10);
@@ -2039,6 +2071,8 @@ function buildColorLut() {
         $('btn-hires').disabled = false;
         exporting = false;
         loopSuspended = false;
+        ignoreWorkerFrames = false;
+        if (sim.useWorker && wasRunning) simSetRunning(true);
       }
 
       function finish() {
@@ -2168,18 +2202,22 @@ function buildColorLut() {
     }
 
     function togglePlay() {
-      if (simState === 'running') { running = false; setSimState('paused'); }
-      else { running = true; setSimState('running'); }
+      if (simState === 'running') { running = false; setSimState('paused'); simSetRunning(false); }
+      else { running = true; setSimState('running'); simSetRunning(true); }
     }
 
     btnPlay.addEventListener('click', togglePlay);
 
     btnStep.addEventListener('click', () => {
       if (running) return;
-      tick(params);       // exactly one iteration
-      frameCount++;
-      if (gpu.active) gpuDisplay(); else renderCPU();
-      frameEl.textContent = 'Frame: ' + frameCount;
+      if (sim.useWorker) {
+        simStep();
+      } else {
+        tick(params);       // exactly one iteration
+        frameCount++;
+        if (gpu.active) gpuDisplay(); else renderCPU();
+        frameEl.textContent = 'Frame: ' + frameCount;
+      }
     });
 
     // --- Keyboard shortcuts (spec §8: Space, R, E, P) ---
@@ -2295,6 +2333,79 @@ function buildColorLut() {
       applyColoredEnabled();
     }
 
+    /* ---------- Web Worker simulation runner (off main thread) ---------- */
+    // The simulation can run inside a DedicatedWorker so the heavy per-frame
+    // grid update never blocks the UI thread. The worker owns U/V/C and posts
+    // V/C snapshots; the main thread only renders them. If Workers are
+    // unavailable (e.g. opened via file://) or the worker fails to deliver a
+    // frame, we transparently fall back to the inline core — so this can never
+    // break the app.
+    const sim = { useWorker: false, worker: null, fallbackTimer: null };
+    let ignoreWorkerFrames = false; // set during hi-res export to drop late frames
+
+    function handleWorkerFrame(m) {
+      if (ignoreWorkerFrames || !m || m.type !== 'frame') return;
+      const n = m.v.length;
+      if (!V || V.length !== n) {
+        W = Math.round(Math.sqrt(n)); H = W;
+        V = new Float32Array(n);
+        C = new Float32Array(m.c.length);
+        stabilityPrev = null;
+      }
+      V.set(m.v); C.set(m.c);
+      frameCount = m.frameCount;
+      if (m.running) fpsFrames++;
+      if (m.done) { running = false; setSimState('done'); }
+      needsRender = true;
+    }
+
+    function disableWorker() {
+      if (sim.fallbackTimer) { clearTimeout(sim.fallbackTimer); sim.fallbackTimer = null; }
+      if (sim.worker) { try { sim.worker.terminate(); } catch (e) {} sim.worker = null; }
+      sim.useWorker = false;
+      // Re-seed the inline core so the app keeps working with valid buffers.
+      initGrid(params.gridSize, params.gridSize, params.seed, params.seedMode);
+      needsRender = true;
+    }
+
+    function enableWorker() {
+      if (typeof Worker === 'undefined') return false;
+      try {
+        const w = new Worker('sim-worker.js');
+        let gotFrame = false;
+        w.onmessage = (e) => { gotFrame = true; handleWorkerFrame(e.data); };
+        w.onerror = (err) => { console.warn('Organica: worker error, using inline sim', err); disableWorker(); };
+        sim.worker = w;
+        sim.useWorker = true;
+        // Self-heal: if the worker never delivers a frame, revert to inline sim.
+        sim.fallbackTimer = setTimeout(() => {
+          if (!gotFrame) { console.warn('Organica: worker produced no frame, using inline sim'); disableWorker(); }
+        }, 1500);
+        return true;
+      } catch (e) {
+        console.warn('Organica: Web Worker unavailable, using inline sim', e);
+        return false;
+      }
+    }
+
+    function simInit(size, seed, mode) {
+      if (sim.useWorker) sim.worker.postMessage({ cmd: 'init', size, seed, mode, params });
+      else initGrid(size, size, seed, mode);
+    }
+    function simSetRunning(r) {
+      if (sim.useWorker) sim.worker.postMessage({ cmd: 'setRunning', running: r });
+    }
+    function simStep() {
+      if (sim.useWorker) sim.worker.postMessage({ cmd: 'step' });
+    }
+    function simRecolor() {
+      if (sim.useWorker) sim.worker.postMessage({ cmd: 'recolor', params });
+      else recolor();
+    }
+    function simSetParams() {
+      if (sim.useWorker) sim.worker.postMessage({ cmd: 'setParams', params });
+    }
+
     /* ---------- 9. Main loop ---------- */
     const frameEl = $('frameCounter');
     const fpsEl = $('fpsCounter');
@@ -2310,39 +2421,22 @@ function buildColorLut() {
 
     function frame() {
       if (!loopSuspended) {
-        if (running) {
-          if (gpu.active) {
-            gpuEnsureSize();
-            gpuStep(params.stepsPerFrame);
-          } else {
-            for (let s = 0; s < params.stepsPerFrame; s++) tick(params);
-          }
+        // When the Web Worker owns the simulation, it drives frameCount and
+        // pushes V/C snapshots; the main thread only paints the latest one.
+        // Otherwise run the ticks inline here.
+        if (running && !sim.useWorker) {
+          for (let s = 0; s < params.stepsPerFrame; s++) tick(params);
           frameCount++;
           fpsFrames++;
-
-          // --- stability detection (CPU) ---
-          const n = W * H;
-          if (!stabilityPrev || stabilityPrev.length !== n) stabilityPrev = new Float32Array(n);
-          let vDiff = 0;
-          for (let i = 0; i < n; i++) {
-            vDiff += Math.abs(V[i] - stabilityPrev[i]);
-            stabilityPrev[i] = V[i];
-          }
-          const avgChange = vDiff / (W * H);
-          if (avgChange < stableThreshold) {
-            stableCount++;
-            if (stableCount >= stableFrames) {
-              running = false;
-              setSimState('done');
-            }
-          } else {
-            stableCount = 0;
-          }
-          // ---------------------------------
+          doStability = true; // folded into the render pass below
         }
 
-        // always render: live palette/bias/invert edits must show while paused
-        if (gpu.active) gpuDisplay(); else renderCPU();
+        // Render at display rate. When paused this only fires on an explicit
+        // edit (needsRender), so we don't burn a full-grid pass every frame.
+        if (running || needsRender) {
+          if (gpu.active) gpuDisplay(); else renderCPU();
+          needsRender = false;
+        }
         frameEl.textContent = 'Frame: ' + frameCount;
       }
       requestAnimationFrame(frame);
@@ -2352,7 +2446,8 @@ function buildColorLut() {
       params.seed = randomSeedString();
     }
     syncUIFromParams();
-    initGrid(params.gridSize, params.gridSize, params.seed, params.seedMode);
+    enableWorker(); // uses Web Worker for the sim when available, else inline
+    simInit(params.gridSize, params.seed, params.seedMode);
     tryInitGPU();
     requestAnimationFrame(frame);
   </script>
