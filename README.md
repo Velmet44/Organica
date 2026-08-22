@@ -54,7 +54,7 @@ The V channel is mapped through a 256-entry colour LUT interpolated in **linear 
 
 ## Colored Seeds
 
-A master **Colored Seeds** toggle paints each seed's growth with its own colour instead of the monochrome V→palette map. The colour belongs to the *whole territory* of each seed (computed as a static per-cell Voronoi field from the seed positions), so a seed's colour stays at full brightness as its growth expands — it never dilutes or fades. Where two seeds' growths meet, their colours blend.
+A master **Colored Seeds** toggle paints each seed's growth with its own colour instead of the monochrome V→palette map. Each seed's hue is a *static* per-cell Voronoi field (so the colour never dilutes or fades as the seed grows), while a separate **spread field** carries the colour outward from each seed along the grown structure. The **Seed Color Diffusion** parameter controls how fast/far that colour diffuses along the traces — at 0 the colour sits at the seeds, and raising it makes it creep further along the growth over time, blending where two seeds meet.
 
 | Control | What it does |
 |---|---|
@@ -62,7 +62,7 @@ A master **Colored Seeds** toggle paints each seed's growth with its own colour 
 | **Randomize Seed Colors** | Each seed gets a deterministic-random hue from the seed string. Same seed + settings always reproduces identical colours (1:1). Off = hues follow a smooth spatial gradient. |
 | **Seed Color Diff** | Spread of hues across seeds (gradient mode). |
 | **Seed Color Offset** | Rotates the gradient (gradient mode). |
-| **Seed Color Diffusion** | Blend softness where two territories meet — 0 = hard borders, 1 = full blend. |
+| **Seed Color Diffusion** | Rate at which each seed's colour spreads along its grown traces — 0 = colour stays at the seeds, higher = it diffuses further along the structure over time (blending where two meet). |
 | **Color Brightness** | 0 = full colour everywhere the pattern exists (no dimming as it grows); higher = the colour dims with V as the pattern grows. |
 | **Seed Palette** | 10 palettes mapping the per-seed colour coordinate to RGB. |
 

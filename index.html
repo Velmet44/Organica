@@ -715,7 +715,9 @@
     /* ---------- 3. Simulation core ---------- */
     let W = 0, H = 0;           // grid dimensions
     let U, V, U_next, V_next;   // double-buffered chemical concentrations
-    let C, C_next;              // per-cell seed colour coordinate (0..1)
+    let C, C_next;              // per-cell seed colour coordinate (0..1) — static hue
+    let S, S_next;              // per-cell colour-spread field (0..1) — how far the
+                               // colour has diffused along the growth traces
     let seedAnchors = [];       // seed geometry (for deterministic colouring)
     let cellSeed1 = null, cellSeed2 = null; // cached nearest/2nd-nearest seed per cell
     let frameCount = 0;
@@ -771,9 +773,9 @@
       return s;
     }
 
-    // C-only paints (colour field only; never touch U/V so they can be
-    // re-coloured live without disturbing a running simulation).
-    function paintBlobC(cx, cy, radius, cVal) {
+    // Field paints (only touch the given array; never U/V). Used to source the
+    // colour hue (C) and the spread field (S) at seed anchors.
+    function paintBlob(arr, cx, cy, radius, val) {
       const r2 = radius * radius;
       for (let dy = -radius; dy <= radius; dy++) {
         const yy = (((cy + dy) % H) + H) % H;
@@ -781,19 +783,69 @@
         const span = Math.floor(Math.sqrt(r2 - dy * dy));
         for (let dx = -span; dx <= span; dx++) {
           const xx = (((cx + dx) % W) + W) % W;
-          C[row + xx] = cVal;
+          arr[row + xx] = val;
         }
       }
     }
 
-    function paintBandC(pos, thickness, vertical, cVal) {
+    function paintBand(arr, pos, thickness, vertical, val) {
       const along = vertical ? W : H;
       for (let a = pos; a < pos + thickness; a++) {
         const aa = ((a % along) + along) % along;
         for (let b = 0; b < (vertical ? H : W); b++) {
           const i = vertical ? (b * W + aa) : (aa * W + b);
-          C[i] = cVal;
+          arr[i] = val;
         }
+      }
+    }
+
+    // Reset the spread field: 1 at every seed (the colour source), 0 elsewhere.
+    // Called when a run starts / is reseeded / coloured-seeds is switched on, so
+    // the colour then diffuses outward from the seeds along the growth traces.
+    function seedSpread() {
+      if (!S || W === 0) return;
+      S.fill(0);
+      if (!params.coloredSeeds) return;
+      for (const a of seedAnchors) {
+        if (a.type === 'blob') paintBlob(S, a.x, a.y, a.r, 1);
+        else paintBand(S, a.pos, a.thick, a.vertical, 1);
+      }
+    }
+
+    // One step of the colour-spread field S. S is diffused (V-masked, so it
+    // follows the growth structure) from the seeds at a rate set by
+    // seedColorDiffusion, and the seeds are re-asserted as a source each step so
+    // the colour keeps flowing outward instead of averaging to nothing. Higher
+    // diffusion => the colour reaches further along the traces per unit time.
+    function stepSpread() {
+      if (!params.coloredSeeds || !S) return;
+      const sDiff = params.seedColorDiffusion;
+      if (sDiff <= 0) return;                 // no spreading: S stays at the seeds
+      const _S = S, _Sn = S_next, _V = V;
+      for (let y = 0; y < H; y++) {
+        const yrow = y * W;
+        for (let x = 0; x < W; x++) {
+          const i = yrow + x;
+          let sum = 0, wsum = 0;
+          for (let dy = -1; dy <= 1; dy++) {
+            const yy = (((y + dy) % H) + H) % H * W;
+            for (let dx = -1; dx <= 1; dx++) {
+              if (dx === 0 && dy === 0) continue;
+              const xx = (((x + dx) % W) + W) % W;
+              const w = (dx === 0 || dy === 0) ? 0.20 : 0.05;
+              sum += _S[yy + xx] * w; wsum += w;
+            }
+          }
+          const sLap = sum - _S[i] * wsum;
+          let ns = _S[i] + sDiff * sLap * _V[i];  // V-mask: spread only along growth
+          _Sn[i] = ns < 0 ? 0 : ns > 1 ? 1 : ns;
+        }
+      }
+      S = _Sn; S_next = _S;
+      // re-assert the colour source at each seed so it keeps flowing outward
+      for (const a of seedAnchors) {
+        if (a.type === 'blob') paintBlob(S, a.x, a.y, a.r, 1);
+        else paintBand(S, a.pos, a.thick, a.vertical, 1);
       }
     }
 
@@ -805,9 +857,11 @@
       U = new Float32Array(n);
       V = new Float32Array(n);
       C = new Float32Array(n);
+      S = new Float32Array(n);
       U_next = new Float32Array(n);
       V_next = new Float32Array(n);
       C_next = new Float32Array(n);
+      S_next = new Float32Array(n);
       U.fill(1);
       V.fill(0);
 
@@ -885,6 +939,7 @@
 
       computeVoronoi();
       assignColors();
+      seedSpread();
 
       frameCount = 0;
     }
@@ -1042,6 +1097,10 @@
 
           _Un[i] = nu < 0 ? 0 : nu > 1 ? 1 : nu;
           _Vn[i] = nv < 0 ? 0 : nv > 1 ? 1 : nv;
+          const sLap = (_S[l] + _S[r] + _S[uN] + _S[dN]) * 0.20 +
+                       (_S[ul] + _S[ur] + _S[dl] + _S[dr]) * 0.05 - _S[i];
+          let ns = _S[i] + sDiff * sLap * _V[i];
+          _Sn[i] = ns < 0 ? 0 : ns > 1 ? 1 : ns;
         }
 
         // right edge column (wraps to left edge)
@@ -1061,6 +1120,10 @@
           let nv = _V[i] + (Dv * lapV + re - (f + k) * _V[i]);
           _Un[i] = nu < 0 ? 0 : nu > 1 ? 1 : nu;
           _Vn[i] = nv < 0 ? 0 : nv > 1 ? 1 : nv;
+          const sLap = (_S[l] + _S[r] + _S[uN] + _S[dN]) * 0.20 +
+                       (_S[ul] + _S[ur] + _S[dl] + _S[dr]) * 0.05 - _S[i];
+          let ns = _S[i] + sDiff * sLap * _V[i];
+          _Sn[i] = ns < 0 ? 0 : ns > 1 ? 1 : ns;
         }
       }
 
@@ -1277,22 +1340,31 @@ function buildColorLut() {
     }
 
     // Displayed RGB (0..255) for cell i, honouring the Colored Seeds toggle.
+    // The static hue C gives the seed's colour at full brightness; the spread
+    // field S (0..1) gates how far that colour has diffused along the growth
+    // traces — S=1 shows full colour, S=0 shows the plain V palette, between is
+    // the advancing front. This keeps colour from ever fading to black.
     function cellColor(i, out, o) {
+      const idx = ((V[i] * 255) | 0) * 3;
+      const mr = colorLut[idx], mg = colorLut[idx + 1], mb = colorLut[idx + 2];
       if (params.coloredSeeds) {
-        const ci = (C[i] * 255) | 0;
-        const sidx = ci * 3;
-        // Brightness loss as the pattern grows: vbase dims by V, while
-        // seedColorBrightness blends that toward full brightness (0 = no loss).
-        const vbase = V[i] > 0.4 ? 1 : V[i] * 2.5;            // clamp(V/0.4, 0, 1)
-        const vn = (1 - params.seedColorBrightness) + params.seedColorBrightness * vbase;
-        out[o]     = (seedColorLut[sidx]     * vn) | 0;
-        out[o + 1] = (seedColorLut[sidx + 1] * vn) | 0;
-        out[o + 2] = (seedColorLut[sidx + 2] * vn) | 0;
+        const s = S[i] < 0 ? 0 : S[i] > 1 ? 1 : S[i];
+        if (s <= 0) {
+          out[o] = mr; out[o + 1] = mg; out[o + 2] = mb;
+        } else {
+          const ci = (C[i] * 255) | 0;
+          const sidx = ci * 3;
+          // Brightness loss as the pattern grows: vbase dims by V, while
+          // seedColorBrightness blends that toward full brightness (0 = no loss).
+          const vbase = V[i] > 0.4 ? 1 : V[i] * 2.5;        // clamp(V/0.4, 0, 1)
+          const vn = (1 - params.seedColorBrightness) + params.seedColorBrightness * vbase;
+          const cr = seedColorLut[sidx] * vn, cg = seedColorLut[sidx + 1] * vn, cb = seedColorLut[sidx + 2] * vn;
+          out[o]     = (mr + (cr - mr) * s) | 0;
+          out[o + 1] = (mg + (cg - mg) * s) | 0;
+          out[o + 2] = (mb + (cb - mb) * s) | 0;
+        }
       } else {
-        const idx = ((V[i] * 255) | 0) * 3;
-        out[o]     = colorLut[idx];
-        out[o + 1] = colorLut[idx + 1];
-        out[o + 2] = colorLut[idx + 2];
+        out[o] = mr; out[o + 1] = mg; out[o + 2] = mb;
       }
     }
 
@@ -1496,6 +1568,11 @@ function buildColorLut() {
     $('ctl-colored').addEventListener('change', () => {
       params.coloredSeeds = $('ctl-colored').checked;
       applyColoredEnabled();
+      seedSpread();   // (re)start the colour front from the seeds
+      if (W > 0) {
+        if (gpu.active) { uploadState(); gpuUploadSpread(); gpuDisplay(); }
+        else renderCPU();
+      }
     });
 
     $('ctl-colorrandom').addEventListener('change', () => {
@@ -1568,6 +1645,8 @@ function buildColorLut() {
       seedLutKeyGPU: '',
       colorTex: null,
       colorBuf: null,
+      spreadTex: null,
+      spreadBuf: null,
       size: 0,
       canReadback: false
     };
@@ -1606,8 +1685,8 @@ function buildColorLut() {
         float dU = uDu * lap.r - reaction + uF * (1.0 - U);
         float dV = uDv * lap.g + reaction - (uF + uK) * V;
 
-        // Colour is a STATIC per-cell territory field (uploaded separately as
-        // uColor), so it is never diffused here.
+        // Colour (hue + spread) is computed on the CPU and uploaded as separate
+        // textures, so the simulation state only carries U/V.
         gl_FragColor = vec4(clamp(U + uDt * dU, 0.0, 1.0),
                             clamp(V + uDt * dV, 0.0, 1.0),
                             0.0, 1.0);
@@ -1618,7 +1697,8 @@ function buildColorLut() {
       uniform sampler2D uState;
       uniform sampler2D uLut;
       uniform sampler2D uSeedLut;
-      uniform sampler2D uColor;     // static per-cell territory colour
+      uniform sampler2D uColor;     // static per-cell territory hue
+      uniform sampler2D uSpread;    // colour-spread field S (how far colour reached)
       uniform float uColored;
       uniform float uVRef;
       uniform float uColorBrightness;
@@ -1626,15 +1706,16 @@ function buildColorLut() {
       void main() {
         vec4 st = texture2D(uState, v_texCoord);
         float V = st.g;
-        float c = texture2D(uColor, v_texCoord).r;   // baked territory colour
-        vec3 col;
-        if (uColored > 0.5) {
+        float sp = clamp(texture2D(uSpread, v_texCoord).r, 0.0, 1.0); // spread reached
+        float c = texture2D(uColor, v_texCoord).r;   // baked territory hue
+        vec3 mono = texture2D(uLut, vec2(V * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
+        vec3 col = mono;
+        if (uColored > 0.5 && sp > 0.0) {
           vec3 sc = texture2D(uSeedLut, vec2(c * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
           float vbase = clamp(V / uVRef, 0.0, 1.0);
           float vn = (1.0 - uColorBrightness) + uColorBrightness * vbase;
-          col = sc * vn;            // background (V~0) shows no colour
-        } else {
-          col = texture2D(uLut, vec2(V * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
+          vec3 colored = sc * vn;
+          col = mix(mono, colored, sp);              // front advances along growth
         }
         gl_FragColor = vec4(col, 1.0);
       }`;
@@ -1766,12 +1847,21 @@ function buildColorLut() {
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 
+        // Dynamic colour-spread texture (RGBA bytes; R = S, 0..1)
+        const spreadTex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, spreadTex);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
         gpu.gl = gl;
         gpu.progSim = progSim;
         gpu.progDisp = progDisp;
         gpu.lutTex = lutTex;
         gpu.seedLutTex = seedLutTex;
         gpu.colorTex = colorTex;
+        gpu.spreadTex = spreadTex;
         gpu.uniSim = {
           state: gl.getUniformLocation(progSim, 'uState'),
           f: gl.getUniformLocation(progSim, 'uF'),
@@ -1786,6 +1876,7 @@ function buildColorLut() {
           lut: gl.getUniformLocation(progDisp, 'uLut'),
           seedLut: gl.getUniformLocation(progDisp, 'uSeedLut'),
           color: gl.getUniformLocation(progDisp, 'uColor'),
+          spread: gl.getUniformLocation(progDisp, 'uSpread'),
           colored: gl.getUniformLocation(progDisp, 'uColored'),
           vref: gl.getUniformLocation(progDisp, 'uVRef'),
           colorBrightness: gl.getUniformLocation(progDisp, 'uColorBrightness')
@@ -1821,7 +1912,7 @@ function buildColorLut() {
       for (let i = 0, j = 0; i < n; i++, j += 4) {
         out[j] = U[i];
         out[j + 1] = V[i];
-        out[j + 2] = C[i];
+        out[j + 2] = 0.0;    // (hue + spread live in their own textures)
         out[j + 3] = 1.0;
       }
       return out;
@@ -1886,6 +1977,21 @@ function buildColorLut() {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, buf);
     }
 
+    // Uploads the CPU colour-spread field S (0..1) for the DISP pass.
+    function gpuUploadSpread() {
+      const gl = gpu.gl;
+      if (!gl || !gpu.size || !gpu.spreadTex) return;
+      const n = W * H;
+      if (!gpu.spreadBuf || gpu.spreadBuf.length !== n * 4) gpu.spreadBuf = new Uint8Array(n * 4);
+      const buf = gpu.spreadBuf;
+      for (let i = 0, j = 0; i < n; i++, j += 4) {
+        buf[j] = (S[i] * 255) | 0;
+        buf[j + 3] = 255;
+      }
+      gl.bindTexture(gl.TEXTURE_2D, gpu.spreadTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    }
+
     function gpuStep(steps) {
       const gl = gpu.gl;
       if (!gl || !gpu.size) return;
@@ -1940,6 +2046,9 @@ function buildColorLut() {
       gl.activeTexture(gl.TEXTURE3);
       gl.bindTexture(gl.TEXTURE_2D, gpu.colorTex);
       gl.uniform1i(gpu.uniDisp.color, 3);
+      gl.activeTexture(gl.TEXTURE4);
+      gl.bindTexture(gl.TEXTURE_2D, gpu.spreadTex);
+      gl.uniform1i(gpu.uniDisp.spread, 4);
       gl.uniform1f(gpu.uniDisp.colored, params.coloredSeeds ? 1.0 : 0.0);
       gl.uniform1f(gpu.uniDisp.vref, 0.4);
       gl.uniform1f(gpu.uniDisp.colorBrightness, params.seedColorBrightness);
@@ -1962,6 +2071,7 @@ function buildColorLut() {
         for (let x = 0; x < W; x++) {
           U[dstRow + x] = buf[srcRow + x * 4];
           V[dstRow + x] = buf[srcRow + x * 4 + 1];
+          S[dstRow + x] = buf[srcRow + x * 4 + 2];
         }
       }
        return true;
@@ -2041,6 +2151,7 @@ function buildColorLut() {
       // save live state — tick() swaps buffer references, so save all of them
       const savedU = U, savedV = V, savedUn = U_next, savedVn = V_next;
       const savedC = C, savedCn = C_next;
+      const savedS = S, savedSn = S_next;
       const savedW = W, savedH = H, savedFc = frameCount;
 
       initGrid(size, size, exParams.seed, exParams.seedMode);
@@ -2058,6 +2169,7 @@ function buildColorLut() {
         U = savedU; V = savedV;
         U_next = savedUn; V_next = savedVn;
         C = savedC; C_next = savedCn;
+        S = savedS; S_next = savedSn;
         W = savedW; H = savedH;
         frameCount = savedFc;
         imgData = null; // dimensions changed under it
@@ -2093,7 +2205,10 @@ function buildColorLut() {
       function chunk(start) {
         if (hiResCancel) { restore(); return; }
         const end = Math.min(start + 50, iters);
-        for (let i = start; i < end; i++) tick(exParams);
+        for (let i = start; i < end; i++) {
+          tick(exParams);
+          if (params.coloredSeeds) stepSpread();
+        }
         fill.style.width = Math.round(end / total * 100) + '%';
         status.textContent = `Rendering… ${end} / ${iters} iterations`;
         if (end < iters) setTimeout(() => chunk(end), 0);
@@ -2201,6 +2316,10 @@ function buildColorLut() {
     btnStep.addEventListener('click', () => {
       if (running) return;
       tick(params);       // exactly one iteration
+      if (params.coloredSeeds) {
+        stepSpread();
+        if (gpu.active) gpuUploadSpread();
+      }
       frameCount++;
       if (gpu.active) gpuDisplay(); else renderCPU();
       frameEl.textContent = 'Frame: ' + frameCount;
@@ -2340,6 +2459,10 @@ function buildColorLut() {
             gpuStep(params.stepsPerFrame);
           } else {
             for (let s = 0; s < params.stepsPerFrame; s++) tick(params);
+          }
+          if (params.coloredSeeds) {
+            stepSpread();
+            if (gpu.active) gpuUploadSpread();
           }
           frameCount++;
           fpsFrames++;
