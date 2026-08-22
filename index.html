@@ -1514,7 +1514,7 @@ function buildColorLut() {
             setSimState('done');
           }
         } else {
-          stableCount = 0;
+          stableCount = Math.max(0, stableCount - STABLE_DECAY);
         }
       }
     }
@@ -2502,16 +2502,16 @@ function buildColorLut() {
           const v = gpu.mode === 'int' ? buf[j + 1] / S : buf[j + 1];
           let d = v - gpuLastV[i];
           if (d < 0) d = -d;
-          if (d >= GPU_VIS_BIN) changed++;
+          if (d >= VIS_BIN) changed++;
         }
-        if (changed <= n * GPU_STABLE_VIS_FRAC) {
+        if (changed <= n * STABLE_VIS_FRAC) {
           stableCount++;
           if (stableCount >= stableFrames) {
             running = false;
             setSimState('done');
           }
         } else {
-          stableCount = 0;
+          stableCount = Math.max(0, stableCount - STABLE_DECAY);
         }
       }
       const cur = new Float32Array(n);
@@ -2895,20 +2895,16 @@ function buildColorLut() {
     let simState = 'idle'; // 'idle' | 'running' | 'paused' | 'done'
     let stableCount = 0;
     let gpuLastV = null; // previous GPU V snapshot for per-frame stability diff
-    // A cell is treated as "still evolving" only if its V changes by at least
-    // one LUT bin (1/255) between frames — smaller shifts cannot alter the
-    // rendered colour, so they must not keep the sim running. When fewer than
-    // STABLE_VIS_FRAC of cells move that much for stableFrames consecutive
-    // frames the pattern is visually static → auto-stop with status "Done".
-    const VIS_BIN = 1 / 255;
+    // "Still evolving" test (all backends): a cell counts only if its V shifts
+    // by at least VIS_BIN (~1.8 LUT bins) between frames — smaller shifts are
+    // sub-perceptual. The sim stops once fewer than STABLE_VIS_FRAC of cells
+    // move that much for stableFrames consecutive frames. A single non-stable
+    // frame only nudges the counter down (STABLE_DECAY) rather than zeroing it,
+    // so sporadic tail jitter can't keep the sim running for hundreds of frames.
+    const VIS_BIN = 1.8 / 255;
     const STABLE_VIS_FRAC = 0.0003;
     const stableFrames = 15;
-    // GPU (float) path carries a longer, sub-perceptual tail than the CPU
-    // float path, so its detector is a little more lenient: a shift must clear
-    // ~2 LUT bins (an actually visible colour step) and up to ~0.06% of cells
-    // may keep drifting without resetting the convergence count.
-    const GPU_VIS_BIN = VIS_BIN * 2;
-    const GPU_STABLE_VIS_FRAC = STABLE_VIS_FRAC * 2;
+    const STABLE_DECAY = 2;
     const btnPlay = $('btn-play');
     const btnStep = $('btn-step');
     const simStatusEl = $('sim-status');

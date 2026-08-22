@@ -17,8 +17,9 @@
     seedColorBrightness: 0.0, seedPalette: 'viridis'
   };
   var stableFrames = 15;
-  var VIS_BIN = 1 / 255;        // a V shift smaller than one LUT bin cannot change the rendered colour
+  var VIS_BIN = 1.8 / 255;      // a V shift smaller than ~1.8 LUT bins is sub-perceptual
   var STABLE_VIS_FRAC = 0.0003; // allow up to 0.03% of cells to flicker without counting as "still evolving"
+  var STABLE_DECAY = 2;         // a single non-stable frame only nudges the counter down, not a full reset
   var SEED_U = 0.5, SEED_V = 0.25;
 
   function mulberry32(seed) {
@@ -256,7 +257,7 @@
     }
     var n = W * H;
     if (changed <= n * STABLE_VIS_FRAC) { stableCount++; if (stableCount >= stableFrames) { running = false; } }
-    else { stableCount = 0; }
+    else { stableCount = Math.max(0, stableCount - STABLE_DECAY); }
     postFrame();
     if (running) setTimeout(loop, 0);
   }
