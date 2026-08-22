@@ -17,7 +17,7 @@
     seedColorBrightness: 0.0, seedPalette: 'viridis'
   };
   var stableFrames = 15;
-  var VIS_BIN = 1.8 / 255;      // a V shift smaller than ~1.8 LUT bins is sub-perceptual
+  var VIS_BIN = 2.5 / 255;      // CPU float tail keeps a slightly larger residual motion than GPU
   var STABLE_VIS_FRAC = 0.0003; // allow up to 0.03% of cells to flicker without counting as "still evolving"
   var STABLE_DECAY = 2;         // a single non-stable frame only nudges the counter down, not a full reset
   var SEED_U = 0.5, SEED_V = 0.25;

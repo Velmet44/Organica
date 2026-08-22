@@ -2502,7 +2502,7 @@ function buildColorLut() {
           const v = gpu.mode === 'int' ? buf[j + 1] / S : buf[j + 1];
           let d = v - gpuLastV[i];
           if (d < 0) d = -d;
-          if (d >= VIS_BIN) changed++;
+          if (d >= GPU_VIS_BIN) changed++;
         }
         if (changed <= n * STABLE_VIS_FRAC) {
           stableCount++;
@@ -2895,13 +2895,16 @@ function buildColorLut() {
     let simState = 'idle'; // 'idle' | 'running' | 'paused' | 'done'
     let stableCount = 0;
     let gpuLastV = null; // previous GPU V snapshot for per-frame stability diff
-    // "Still evolving" test (all backends): a cell counts only if its V shifts
-    // by at least VIS_BIN (~1.8 LUT bins) between frames — smaller shifts are
-    // sub-perceptual. The sim stops once fewer than STABLE_VIS_FRAC of cells
-    // move that much for stableFrames consecutive frames. A single non-stable
-    // frame only nudges the counter down (STABLE_DECAY) rather than zeroing it,
-    // so sporadic tail jitter can't keep the sim running for hundreds of frames.
-    const VIS_BIN = 1.8 / 255;
+    // "Still evolving" test: a cell counts only if its V shifts by at least the
+    // relevant VIS_BIN between frames — smaller shifts are sub-perceptual. The
+    // sim stops once fewer than STABLE_VIS_FRAC of cells move that much for
+    // stableFrames consecutive frames. A single non-stable frame only nudges
+    // the counter down (STABLE_DECAY) rather than zeroing it, so sporadic tail
+    // jitter can't keep the sim running for hundreds of frames.
+    // Tuned per backend: GPU float is perceptually "done" at ~1.8 bins; the CPU
+    // float tail keeps a slightly larger residual motion, so it needs ~2.5.
+    const VIS_BIN = 2.5 / 255;       // CPU / inline path
+    const GPU_VIS_BIN = 1.8 / 255;   // GPU float path (measured as accurate)
     const STABLE_VIS_FRAC = 0.0003;
     const stableFrames = 15;
     const STABLE_DECAY = 2;
