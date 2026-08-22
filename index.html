@@ -353,6 +353,85 @@
     }
     .copy-tip.show { opacity: 1; }
 
+    /* Parameter info icons (hover tooltip) */
+    .info-i {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 14px;
+      height: 14px;
+      margin-left: 6px;
+      border-radius: 50%;
+      background: #2a2a3a;
+      border: 1px solid #3d3d52;
+      color: #9aa0c0;
+      font-size: 9px;
+      font-style: italic;
+      font-weight: 700;
+      cursor: help;
+      vertical-align: middle;
+      user-select: none;
+      line-height: 1;
+    }
+    .info-i:hover {
+      background: var(--accent);
+      color: #0a0a0f;
+      border-color: var(--accent);
+    }
+    #info-tip {
+      position: fixed;
+      max-width: 260px;
+      background: #16161f;
+      border: 1px solid var(--border);
+      color: #d0d0e0;
+      font-size: 11px;
+      line-height: 1.45;
+      padding: 8px 10px;
+      border-radius: 8px;
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+      pointer-events: none;
+      z-index: 200;
+      display: none;
+    }
+    #info-tip.visible { display: block; }
+
+    /* Import-parameters modal */
+    #import-modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(5, 5, 10, 0.75);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 120;
+    }
+    #import-modal.visible { display: flex; }
+    #import-text {
+      width: 100%;
+      height: 160px;
+      background: #12121a;
+      color: #d0d0e0;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      resize: vertical;
+      margin-bottom: 8px;
+      box-sizing: border-box;
+    }
+    .import-error {
+      color: #ff7070;
+      font-size: 11px;
+      min-height: 14px;
+      margin-bottom: 8px;
+    }
+    .modal-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+
     /* Keyboard shortcut legend */
     .shortcuts {
       padding: 10px 14px 16px;
@@ -609,6 +688,7 @@
           </select>
         </div>
         <button class="btn btn-filled" id="btn-reset">Reset / Reseed</button>
+        <button class="btn" id="btn-resetall">Reset All Settings</button>
       </section>
 
       <section class="panel-section" id="sec-export">
@@ -629,6 +709,7 @@
         </div>
         <button class="btn" id="btn-hires" style="margin-bottom:8px">High-Res Render…</button>
         <button class="btn" id="btn-json">Copy Parameters JSON</button>
+        <button class="btn" id="btn-import">Import Parameters JSON</button>
       </section>
 
       <!-- Shortcuts legend (spec §8) -->
@@ -676,6 +757,25 @@
       <button class="btn" id="btn-notice-ok">OK</button>
     </div>
   </div>
+
+  <div id="import-modal">
+    <div class="modal-box">
+      <button class="about-close" id="btn-import-close">✕</button>
+      <h3>Import Parameters JSON</h3>
+      <p style="font-size:12px; color:#aaa; margin-bottom:10px;">
+        Paste a parameters JSON (e.g. from <em>Copy Parameters JSON</em>) and press Import.
+        Unknown or invalid fields are ignored.
+      </p>
+      <textarea id="import-text" spellcheck="false" placeholder='{ "f": 0.055, "k": 0.062, ... }'></textarea>
+      <div class="import-error" id="import-error"></div>
+      <div class="modal-actions">
+        <button class="btn" id="btn-import-cancel">Cancel</button>
+        <button class="btn btn-filled" id="btn-import-apply">Import</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="info-tip"></div>
 
   <script>
     'use strict';
@@ -736,6 +836,9 @@
       seedPalette: 'viridis', // palette mapping the seed colour coordinate -> RGB
       useGPU: false            // opt-in WebGL/GPU simulation path (falls back to CPU/worker)
     };
+
+    // Immutable snapshot of the factory-default settings for "Reset All Settings".
+    const DEFAULTS = Object.freeze(Object.assign({}, params));
 
     /* ---------- 3. Simulation core ---------- */
     let W = 0, H = 0;           // grid dimensions
@@ -1412,7 +1515,69 @@ function buildColorLut() {
         needsRender = true; // repaint even while paused
       });
     }
+    // --- Per-parameter info icons (hover tooltip) ---
+    const PARAM_INFO = {
+      f: 'Feed Rate — how fast chemical U is replenished each step. Together with Kill Rate it decides which pattern emerges; changes of ±0.001 switch between spots, stripes, mazes and more.',
+      k: 'Kill Rate — how fast chemical V is removed each step. The single most sensitive knob: tiny changes (±0.001) produce wildly different patterns.',
+      Du: 'Diffusion U — how quickly U spreads to neighbouring cells. Higher values give smoother, larger features.',
+      Dv: 'Diffusion V — how quickly V spreads to neighbouring cells (usually a little lower than Du in interesting regimes).',
+      stepsPerFrame: 'Steps / Frame — simulation iterations per animation frame. Higher evolves faster but costs more CPU/GPU each frame.',
+      palette: 'Colour Palette — maps the V concentration field to colour in the final image.',
+      invert: 'Invert Colours — swaps the low and high ends of the palette.',
+      colorBias: 'Colour Bias — gamma-like midpoint shift that brightens or darkens midtones without moving the black/white points.',
+      vibrance: 'Vibrance — boosts saturation of the colour output (0 = desaturated, 1 = natural, 2 = vivid).',
+      coloredSeeds: 'Enable Colored Seeds — master toggle for per-seed territory colouring. When on, each seed region gets its own colour.',
+      seedColorRandom: 'Randomize Seed Colors — give each seed a deterministic-random colour derived from the seed (reproducible 1:1) instead of a smooth gradient.',
+      seedPalette: 'Seed Palette — palette used to map each seed’s colour coordinate to an RGB colour.',
+      seedColorDiff: 'Seed Color Diff — spread of colours across seeds (1 = full palette range, 0 = single colour).',
+      seedColorDiffusion: 'Seed Color Diffusion — softness of the colour blend at the borders where neighbouring seeds meet.',
+      seedColorOffset: 'Seed Color Offset — rotates the base colour assignment, shifting the whole palette of seed colours.',
+      seedColorBrightness: 'Color Brightness — 0 = full brightness wherever the pattern exists (no dimming as it grows); 1 = brightness scales with V.',
+      seedMode: 'Seed Pattern — the initial paint layout (spots, stripes, noise, …) before the reaction begins.',
+      seed: 'Seed Value — any text hashed into the starting grid. The same text always reproduces the identical pattern; this is your reproducible seed.',
+      gridSize: 'Grid Size — simulation resolution (cells per side). Larger grids show finer detail but run slower.',
+      useGPU: 'Use GPU (WebGL) — runs the simulation on the GPU. Prefers an integer path for bit-exact reproducibility and falls back to float or CPU if unavailable.'
+    };
+    // Control id for each info key (a few differ from the param key).
+    const INFO_CTRL = {
+      f: 'ctl-f', k: 'ctl-k', Du: 'ctl-Du', Dv: 'ctl-Dv',
+      stepsPerFrame: 'ctl-stepsPerFrame', palette: 'ctl-palette', invert: 'ctl-invert',
+      colorBias: 'ctl-colorBias', vibrance: 'ctl-vibrance',
+      coloredSeeds: 'ctl-colored', seedColorRandom: 'ctl-colorrandom', seedPalette: 'ctl-seedpalette',
+      seedColorDiff: 'ctl-seedColorDiff', seedColorDiffusion: 'ctl-seedColorDiffusion',
+      seedColorOffset: 'ctl-seedColorOffset', seedColorBrightness: 'ctl-colorBrightness',
+      seedMode: 'ctl-seedmode', seed: 'ctl-seed', gridSize: 'ctl-gridsize', useGPU: 'ctl-gpu'
+    };
+
+    function makeInfoIcon(text) {
+      const el = document.createElement('span');
+      el.className = 'info-i';
+      el.textContent = 'i';
+      el.setAttribute('role', 'img');
+      el.setAttribute('aria-label', 'info');
+      el.addEventListener('mouseenter', showInfoTip);
+      el.addEventListener('mouseleave', hideInfoTip);
+      el.dataset.info = text;
+      return el;
+    }
+    function showInfoTip(e) {
+      const tip = $('info-tip');
+      const r = e.currentTarget.getBoundingClientRect();
+      tip.textContent = e.currentTarget.dataset.info;
+      tip.style.left = Math.min(r.left, window.innerWidth - 270) + 'px';
+      tip.style.top = (r.bottom + 6) + 'px';
+      tip.classList.add('visible');
+    }
+    function hideInfoTip() { $('info-tip').classList.remove('visible'); }
+
     SLIDERS.forEach(buildSliderRow);
+
+    // Attach an info icon to every labelled parameter control.
+    for (const key of Object.keys(INFO_CTRL)) {
+      const id = INFO_CTRL[key];
+      const label = document.querySelector('label[for="' + id + '"]');
+      if (label && PARAM_INFO[key]) label.appendChild(makeInfoIcon(PARAM_INFO[key]));
+    }
 
     /* ---------- Presets (spec §5) ---------- */
     const PRESETS = [
@@ -1653,6 +1818,18 @@ function buildColorLut() {
     });
 
     $('btn-reset').addEventListener('click', reseed);
+
+    // Restore every setting to its factory default (and reseed). Keeps the
+    // current backend choice in sync with the imported/default useGPU flag.
+    function resetAllSettings() {
+      Object.assign(params, DEFAULTS);
+      params.seed = ''; // resolves to a fresh random seed on reseed
+      if (gpu.active) disableGPU();
+      $('ctl-gpu').checked = false;
+      syncUIFromParams();
+      reseed();
+    }
+    $('btn-resetall').addEventListener('click', resetAllSettings);
 
     /* ---------- 6. GPU renderer (WebGL2, integer fixed-point) ---------- */
     // REPRODUCIBLE GPU: the simulation runs entirely in integer fixed-point
@@ -2423,6 +2600,8 @@ function buildColorLut() {
         version: '1.0',
         seed: params.seed,
         seedMode: params.seedMode,
+        gridSize: params.gridSize,
+        stepsPerFrame: params.stepsPerFrame,
         f: params.f,
         k: params.k,
         Du: params.Du,
@@ -2430,6 +2609,7 @@ function buildColorLut() {
         palette: params.palette,
         invert: params.invert,
         colorBias: params.colorBias,
+        vibrance: params.vibrance,
         coloredSeeds: params.coloredSeeds,
         seedColorRandom: params.seedColorRandom,
         seedPalette: params.seedPalette,
@@ -2437,6 +2617,7 @@ function buildColorLut() {
         seedColorDiffusion: params.seedColorDiffusion,
         seedColorOffset: params.seedColorOffset,
         seedColorBrightness: params.seedColorBrightness,
+        useGPU: params.useGPU,
         iterationsAtExport: frameCount
       }, null, 2);
     }
@@ -2470,6 +2651,59 @@ function buildColorLut() {
     }
 
     $('btn-json').addEventListener('click', function() { copyParamsJson(this); });
+
+    // --- Import settings from pasted parameter JSON ---
+    const IMPORT_KEYS = ['f','k','Du','Dv','stepsPerFrame','gridSize','seed','seedMode',
+      'palette','invert','colorBias','vibrance','coloredSeeds','seedColorRandom','seedPalette',
+      'seedColorDiff','seedColorDiffusion','seedColorOffset','seedColorBrightness','useGPU'];
+
+    function openImport() {
+      $('import-text').value = '';
+      $('import-error').textContent = '';
+      $('import-modal').classList.add('visible');
+    }
+    function closeImport() { $('import-modal').classList.remove('visible'); }
+
+    function applyImportedJSON() {
+      const text = $('import-text').value.trim();
+      const errEl = $('import-error');
+      if (!text) { errEl.textContent = 'Paste some JSON first.'; return; }
+      let obj;
+      try { obj = JSON.parse(text); }
+      catch (e) { errEl.textContent = 'Invalid JSON: ' + e.message; return; }
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+        errEl.textContent = 'Expected a JSON object.'; return;
+      }
+      let touched = false;
+      for (const kk of IMPORT_KEYS) {
+        if (!(kk in obj)) continue;
+        let v = obj[kk];
+        const cur = params[kk];
+        if (typeof cur === 'number') { v = Number(v); if (!isFinite(v)) continue; }
+        else if (typeof cur === 'boolean') v = !!v;
+        else if (typeof cur === 'string') v = String(v);
+        params[kk] = v; touched = true;
+      }
+      if (!touched) { errEl.textContent = 'No recognised parameters found.'; return; }
+
+      // Align the active backend with the imported useGPU preference.
+      if (params.useGPU && !gpu.active) {
+        if (!enableGPU()) { params.useGPU = false; $('ctl-gpu').checked = false; }
+      } else if (!params.useGPU && gpu.active) {
+        disableGPU();
+      }
+      syncUIFromParams();
+      reseed();
+      closeImport();
+    }
+
+    $('btn-import').addEventListener('click', openImport);
+    $('btn-import-close').addEventListener('click', closeImport);
+    $('btn-import-cancel').addEventListener('click', closeImport);
+    $('btn-import-apply').addEventListener('click', applyImportedJSON);
+    $('import-modal').addEventListener('click', (e) => {
+      if (e.target === $('import-modal')) closeImport();
+    });
 
     /* ---------- 8. Transport, shortcuts, fullscreen, hash ---------- */
     let running = false;
@@ -2548,6 +2782,7 @@ function buildColorLut() {
         case 'Escape':
           document.body.classList.remove('fullscreen');
           $('about-modal').classList.remove('visible');
+          $('import-modal').classList.remove('visible');
           break;
       }
     }

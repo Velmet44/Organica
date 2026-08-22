@@ -99,13 +99,16 @@ Each preset also sets a matching seed pattern and colour palette; clicking one r
 - **▶ Start / ⏸ Pause** — freezes the simulation but keeps rendering, so palette and bias edits stay visible while paused.
 - **▶ Step** (enabled while paused) — advances exactly one iteration.
 - **Reset / Reseed** — reinitialises the grid from the current seed and settings. The engine auto-stops with a **Done** status once the pattern has converged (per-cell V change stays below a tiny threshold for ~15 frames).
+- **Reset All Settings** — restores every parameter (including backend choice) to its factory default and reseeds.
 - **⛶ Fullscreen** — hides the control panel and fills the viewport; click again or press `Esc` to exit.
+- **ⓘ info icons** — every parameter shows a small `ⓘ` next to its label; hover it for a plain-language explanation of what that parameter does.
 
 ## Export
 
 - **📷 Export PNG** — saves exactly what the canvas shows right now, named `organica_<seed>_f<f>_k<k>.png` (or your custom filename).
 - **High-Res Render…** — re-runs the *same simulation from scratch* off-screen at up to 4096×4096 using the CPU path (re-simulation is deterministic, not upscaling), capped at 5000 iterations, with a progress modal and Cancel button. The live session is suspended and fully restored afterwards.
-- **Copy Parameters JSON** — puts a JSON object (seed, seed mode, f/k/Du/Dv, palette, invert, bias, coloured-seed settings) on the clipboard for reproducing a look elsewhere.
+- **Copy Parameters JSON** — puts a full JSON object (seed, seed mode, grid size, steps/frame, f/k/Du/Dv, palette, invert, bias, vibrance, coloured-seed settings, GPU flag) on the clipboard for reproducing a look elsewhere. Paste it back via **Import Parameters JSON**.
+- **Import Parameters JSON** — opens a dialog where you can paste a parameters JSON (e.g. from *Copy Parameters JSON*); recognised fields are applied, the UI and backend sync, and the simulation reseeds. Unknown or invalid fields are ignored with an inline error.
 
 ## Keyboard Shortcuts
 
