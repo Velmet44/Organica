@@ -1,10 +1,10 @@
 # Organica — Reaction-Diffusion Engine
 
-**Status: Complete.** Gray-Scott reaction-diffusion simulation running entirely on a CPU core (double-buffered `Float32Array` + Canvas2D), with live parameters, 8 presets, 10 colour palettes, per-seed coloured territories, reproducible seeds, and print-quality PNG export. Pure vanilla HTML/CSS/JS — no framework, no build step, no external assets (only the JetBrains Mono webfont).
+**Status: Complete.** Gray-Scott reaction-diffusion simulation with live parameters, 8 presets, 10 colour palettes plus a custom two-colour gradient editor, per-seed coloured territories, reproducible seeds, and print-quality PNG/WebM export. It runs on the GPU (WebGL2) by default with an automatic CPU fallback, and is pure vanilla HTML/CSS/JS — no framework, no build step, no external assets (only the JetBrains Mono webfont).
 
 Organica is a browser-based **Gray-Scott reaction-diffusion pattern engine**: it simulates two virtual chemicals that react and diffuse across a grid, spontaneously organising themselves into the spots, stripes, labyrinths, and coral-like branching patterns seen on animal skins, seashells, and corals. Every parameter — feed rate, kill rate, diffusion, seed pattern, colour palette — can be tuned live while the simulation runs, and any run can be exported as a print-quality PNG up to 4096×4096.
 
-> **Rendering note.** The simulation runs on the **CPU core** with Canvas2D rendering by default. There is also an optional **WebGL/GPU** path: tick *Use GPU (WebGL)* in the Simulation panel to run the reaction-diffusion step on the GPU. When the device exposes `EXT_color_buffer_integer`, the GPU path uses **integer fixed-point** state (WebGL2 RGBA32I) so the output is **bit-exact and reproducible across different GPUs**. If that extension is missing but `EXT_color_buffer_float` is available, it falls back to a **floating-point** GPU path and shows a notice explaining that this is fast but only reproducible on the same device/driver (not bit-exact across GPUs). If neither is available, Organica shows a notice and continues on the CPU. The GPU path keeps the colour pipeline fully on-chip (colouring is computed from `V` in the display shader) so no CPU readback is needed.
+> **Rendering note.** The simulation runs on the **GPU (WebGL2)** by default, with an automatic fallback to a **Web Worker on the CPU** when WebGL2 or the required extensions are unavailable. The GPU path keeps the UI responsive and, when the device exposes `EXT_color_buffer_integer`, runs the entire step in **integer fixed-point** (WebGL2 RGBA32I) so the output is **bit-exact and reproducible across different GPUs**. If that extension is missing but `EXT_color_buffer_float` is available, it falls back to a **floating-point** GPU path and shows a notice explaining that this is fast but only reproducible on the same device/driver (not bit-exact across GPUs). If neither is available, Organica shows a notice and continues on the CPU. The GPU path keeps the colour pipeline fully on-chip (colouring is computed from `V` in the display shader) so no CPU readback is needed.
 
 ## Running Locally
 
@@ -31,11 +31,11 @@ Every parameter is live — moving a slider affects the running simulation on th
 | Diffusion U `Du` | 0.05 – 0.40 | 0.210 | Spread speed of U across the grid. |
 | Diffusion V `Dv` | 0.01 – 0.25 | 0.105 | Spread speed of V (naturally lower than U in interesting regimes). |
 | Steps / Frame | 12 – 40 | 40 | Simulation ticks per animation frame — higher = faster evolution. |
-| Use GPU (WebGL) | on / off | off | Runs the simulation on the GPU. Prefers an integer fixed-point path (reproducible bit-exact across GPUs, needs `EXT_color_buffer_integer`); otherwise uses a floating-point path (fast, but only reproducible on the same device, needs `EXT_color_buffer_float`). Falls back to the CPU with a notice if neither is available. |
+| Use GPU (WebGL) | on / off | on | Runs the simulation on the GPU. Prefers an integer fixed-point path (reproducible bit-exact across GPUs, needs `EXT_color_buffer_integer`); otherwise uses a floating-point path (fast, but only reproducible on the same device, needs `EXT_color_buffer_float`). Falls back to the CPU with a notice if neither is available. |
 | Colour Bias | 0.0 – 1.0 | 0.5 | Gamma-like midpoint shift; brightens or darkens midtones without touching black/white points. |
 | Vibrance | 0.0 – 2.0 | 1.0 | Boosts saturation of the colour output (0 = desaturated, 1 = natural, 2 = vivid). |
 | Invert Colours | on / off | off | Swaps low and high ends of the palette. |
-| Palette | 10 options | Viridis* | Maps concentration V to colour (see below). |
+| Palette | 10 + Custom | Viridis* | Maps concentration V to colour (see below). |
 | Seed Pattern | 7 modes | Spots | Initial paint layout: spots, stripe, noise, center blob, corners, cross, random scatter. |
 | Seed Value | any text | random | Hashed into the PRNG seed — same text + mode always reproduces the identical starting grid. |
 | Grid Size | 256 / 512 / 768 / 1024 | 512 | Simulation resolution (repaints the grid). |
@@ -60,10 +60,11 @@ The V channel is mapped through a 256-entry colour LUT interpolated in **linear 
 - **Grayscale** — classic black → white
 - **Alien** — black → dark green → bright green → lime → white
 - **Neon** — black → purple → magenta → cyan → white
+- **Custom…** — pick **Custom…** from either palette dropdown to open an editor where you build a gradient between two colours. Choose each endpoint with the colour picker, type a hex code, or enter R/G/B values; the result previews live on the canvas.
 
 ## Colored Seeds
 
-A master **Colored Seeds** toggle paints each seed's growth with its own colour instead of the monochrome V→palette map.
+A master **Colored Seeds** toggle paints each seed's growth with its own colour instead of the monochrome V→palette map. It is **enabled by default**.
 
 Each cell is assigned a **static per-cell territory colour** — a Voronoi field computed from the seed geometry (blended between the two nearest seeds at contacts). The colour belongs to the whole territory and is **never diffused**, so it stays at full brightness as a seed grows and only blends where two territories meet. The final pixel is a blend between the plain V-palette colour and the territory colour, gated by **pattern presence** (how much of the reaction-diffusion structure actually exists at that cell), so the empty background stays the background and only the grown structure is coloured.
 
@@ -75,7 +76,7 @@ Each cell is assigned a **static per-cell territory colour** — a Voronoi field
 | **Seed Color Offset** | Rotates the gradient (gradient mode). |
 | **Seed Color Diffusion** | Blend softness at the borders where two seed territories meet — 0 = hard Voronoi borders, higher = softer feathering. |
 | **Color Brightness** | 0 = full colour everywhere the pattern exists (no dimming as it grows); higher = the colour dims with V as the pattern grows. |
-| **Seed Palette** | 10 palettes mapping the per-seed colour coordinate to RGB. |
+| **Seed Palette** | 10 palettes (plus Custom) mapping the per-seed colour coordinate to RGB. |
 
 **Reproducibility:** random colours derive from `mulberry32(hashStr(seed + '\x00color'))`, so the coloured result is recreated 1:1 by the same seed + settings. Colouring never resets or disturbs a running simulation — recolouring only repaints the colour field.
 
@@ -131,17 +132,17 @@ Every parameter change updates the URL hash with a compact base64-encoded parame
 
 ## Architecture Notes
 
-Single `index.html` (~2360 lines): layout, styles, and clearly-sectioned script modules (PRNG → CPU sim → rendering → presets/seeding → GPU → export → transport → main loop).
+Single `index.html` (~3650 lines): layout, styles, and clearly-sectioned script modules (PRNG → CPU sim → rendering → presets/seeding → GPU → export → transport → main loop).
 
 - **Simulation core**: two `Float32Array` grids for U and V, double-buffered and swapped each tick (never updated in place), with a 9-tap weighted Laplacian (0.20 cardinal / 0.05 diagonal weights) and toroidal wrapping via modulo indexing. By default the simulation runs on a **Web Worker** (off the main thread) and posts snapshots back for rendering, so the UI stays responsive even on low-end hardware; if Workers are unavailable it falls back to running inline. The default configuration is 512² × 40 steps ≈ 10.5M cell-updates per frame.
 - **Renderer**: the V field is mapped through a rebuilt-on-change 256-entry LUT (linear-RGB interpolation, optional invert/bias/vibrance); coloured-seed territory colours are blended in per cell, gated by pattern presence. Output goes to a Canvas2D `ImageData`.
 - **Colored Seeds**: a static Voronoi territory colour field `C` is computed when seeding (and re-derived live on colour changes); it lives entirely on the CPU and is never part of the simulation state, so recolouring can never disturb a running pattern.
-- **GPU path**: an opt-in **WebGL2** pipeline. The preferred path runs the entire Gray-Scott step in **integer fixed-point** (RGBA32I state, `GPU_SCALE = 16384`) so identical seeds/sliders produce bit-identical images on any WebGL2 GPU/driver — ideal for 1:1 contest entries on another machine. When `EXT_color_buffer_integer` is unavailable it transparently falls back to a **floating-point** path (`EXT_color_buffer_float`), which is fast but only reproducible on the same device. Both modes keep the colour pipeline fully on-chip (colouring computed from `V` in the display shader); CPU readback is avoided. If neither extension exists, the app reverts to the CPU/Worker core.
+- **GPU path**: a **WebGL2** pipeline that is enabled by default, with automatic CPU fallback. The preferred path runs the entire Gray-Scott step in **integer fixed-point** (RGBA32I state, `GPU_SCALE = 16384`) so identical seeds/sliders produce bit-identical images on any WebGL2 GPU/driver — ideal for 1:1 contest entries on another machine. When `EXT_color_buffer_integer` is unavailable it transparently falls back to a **floating-point** path (`EXT_color_buffer_float`), which is fast but only reproducible on the same device. Both modes keep the colour pipeline fully on-chip (colouring computed from `V` in the display shader); CPU readback is avoided. If neither extension exists, the app reverts to the CPU/Worker core.
 
 ## Known Trade-offs
 
 - High-res re-render is pure-CPU by design (deterministic, loss-free). At 4096² each iteration is expensive, so long sessions exceed a minute to re-simulate; the progress modal and Cancel button keep this manageable, and smaller sizes are fast.
-- The simulation runs on the CPU (optionally in a Web Worker). On lower-end hardware, large grids (1024²) or high steps/frame may run well below 60fps; lowering Steps / Frame or Grid Size restores smoothness. The Web Worker keeps the UI responsive even while the simulation is CPU-bound. The GPU path is intended to close the remaining gap.
+- By default the simulation runs on the GPU; if that is unavailable it falls back to the CPU (optionally in a Web Worker). On lower-end hardware, large grids (1024²) or high steps/frame may run well below 60fps; lowering Steps / Frame or Grid Size restores smoothness. The Web Worker keeps the UI responsive even while the simulation is CPU-bound.
 
 ## Licence
 

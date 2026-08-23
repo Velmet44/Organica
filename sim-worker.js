@@ -12,7 +12,7 @@
   var params = {
     f: 0.055, k: 0.062, Du: 0.21, Dv: 0.105, stepsPerFrame: 40,
     seed: '', seedMode: 'spots',
-    coloredSeeds: false, seedColorRandom: false,
+    coloredSeeds: true, seedColorRandom: false,
     seedColorDiff: 1.0, seedColorDiffusion: 0.08, seedColorOffset: 0.0,
     seedColorBrightness: 0.0, seedPalette: 'viridis'
   };

@@ -648,6 +648,92 @@
       color: var(--text-dim);
     }
 
+    /* Custom palette editor */
+    #custom-palette-modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(5, 5, 10, 0.75);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 130;
+    }
+    #custom-palette-modal.visible { display: flex; }
+
+    .custom-palette-box { width: 380px; max-width: calc(100vw - 32px); }
+    .cp-sub {
+      font-size: 11.5px;
+      color: var(--text-dim);
+      margin: -4px 0 18px;
+      line-height: 1.5;
+    }
+    .cp-stop { margin-bottom: 14px; }
+    .cp-stop-head {
+      font-size: 10.5px;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      color: var(--text-dim);
+      margin-bottom: 9px;
+    }
+    .cp-row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 9px;
+    }
+    .cp-swatch {
+      width: 46px;
+      height: 34px;
+      flex-shrink: 0;
+      padding: 0;
+      border: 1px solid var(--border-strong);
+      border-radius: 6px;
+      background: none;
+      cursor: pointer;
+    }
+    .cp-swatch::-webkit-color-swatch-wrapper { padding: 3px; }
+    .cp-swatch::-webkit-color-swatch { border: none; border-radius: 3px; }
+    .cp-swatch::-moz-color-swatch { border: none; border-radius: 3px; }
+    .cp-hex {
+      flex: 1;
+      min-width: 0;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .cp-rgb { display: flex; gap: 8px; }
+    .cp-rgb label {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 10px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .cp-rgb input {
+      width: 100%;
+      text-align: center;
+      background: #0e1016;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      padding: 6px 4px;
+      font-family: var(--mono);
+      font-size: 12px;
+      outline: none;
+      -moz-appearance: textfield;
+    }
+    .cp-rgb input:focus { border-color: var(--accent); }
+    .cp-rgb input::-webkit-outer-spin-button,
+    .cp-rgb input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    .cp-preview { margin: 2px 0 16px; }
+    .cp-preview-bar {
+      height: 14px;
+      border-radius: 7px;
+      border: 1px solid var(--border-strong);
+    }
+
     /* Fullscreen mode: hide panel, canvas fills viewport */
     body.fullscreen #panel,
     body.fullscreen #topbar { display: none; }
@@ -768,11 +854,12 @@
             <option value="ice">Ice</option>
             <option value="fire">Fire</option>
             <option value="alien">Alien</option>
-            <option value="neon">Neon</option>
-          </select>
-        </div>
-        <div class="check-row">
-          <label for="ctl-invert">Invert Colours</label>
+              <option value="neon">Neon</option>
+              <option value="custom">Custom…</option>
+            </select>
+          </div>
+          <div class="check-row">
+            <label for="ctl-invert">Invert Colours</label>
           <input type="checkbox" id="ctl-invert">
         </div>
         <!-- colour bias slider row injected by JS -->
@@ -800,10 +887,11 @@
             <option value="ice">Ice</option>
             <option value="fire">Fire</option>
             <option value="alien">Alien</option>
-            <option value="neon">Neon</option>
-          </select>
-        </div>
-        <!-- seed colour sliders injected by JS -->
+              <option value="neon">Neon</option>
+              <option value="custom">Custom…</option>
+            </select>
+          </div>
+          <!-- seed colour sliders injected by JS -->
       </section>
 
       <section class="panel-section" id="sec-init">
@@ -970,6 +1058,50 @@
     </div>
   </div>
 
+  <!-- Custom palette editor -->
+  <div id="custom-palette-modal">
+    <div class="modal-box custom-palette-box">
+      <button class="about-close" id="btn-custom-close" title="Close">✕</button>
+      <h3 id="custom-palette-title">Custom Palette</h3>
+      <p class="cp-sub">Build a gradient between two colours. Pick with the swatch, or enter a hex code or RGB values.</p>
+
+      <div class="cp-stop">
+        <div class="cp-stop-head">Start colour</div>
+        <div class="cp-row">
+          <input type="color" class="cp-swatch" data-end="a">
+          <input type="text" class="cp-hex" data-end="a" placeholder="#6E8EFB" spellcheck="false" autocomplete="off">
+        </div>
+        <div class="cp-rgb">
+          <label>R<input type="number" min="0" max="255" class="cp-r" data-end="a"></label>
+          <label>G<input type="number" min="0" max="255" class="cp-g" data-end="a"></label>
+          <label>B<input type="number" min="0" max="255" class="cp-b" data-end="a"></label>
+        </div>
+      </div>
+
+      <div class="cp-preview">
+        <div class="cp-preview-bar" id="cp-preview-bar"></div>
+      </div>
+
+      <div class="cp-stop">
+        <div class="cp-stop-head">End colour</div>
+        <div class="cp-row">
+          <input type="color" class="cp-swatch" data-end="b">
+          <input type="text" class="cp-hex" data-end="b" placeholder="#F2783C" spellcheck="false" autocomplete="off">
+        </div>
+        <div class="cp-rgb">
+          <label>R<input type="number" min="0" max="255" class="cp-r" data-end="b"></label>
+          <label>G<input type="number" min="0" max="255" class="cp-g" data-end="b"></label>
+          <label>B<input type="number" min="0" max="255" class="cp-b" data-end="b"></label>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn" id="btn-custom-cancel">Cancel</button>
+        <button class="btn btn-filled" id="btn-custom-apply">Apply</button>
+      </div>
+    </div>
+  </div>
+
   <div id="info-tip"></div>
 
   <script>
@@ -1025,14 +1157,14 @@
       invert: false,
       colorBias: 0.5,
       vibrance: 1.0,        // 0.0 = natural, 1.0 = default, 2.0+ = boosted midtone saturation
-      coloredSeeds: false,   // master toggle for per-seed colouring
+      coloredSeeds: true,    // master toggle for per-seed colouring
       seedColorRandom: false,// assign each seed a deterministic-random colour (from seed)
       seedColorDiff: 1.0,    // Seed Colour Difference: spread of colours across seeds (1 = full palette)
       seedColorDiffusion: 0.08, // Seed Colour Diffusion: blend softness at joining fronts
       seedColorOffset: 0.0,  // base rotation of seed colour assignment
       seedColorBrightness: 0.0, // 0 = full brightness everywhere pattern exists (no dimming as it grows); 1 = dim by V
       seedPalette: 'viridis', // palette mapping the seed colour coordinate -> RGB
-      useGPU: false            // opt-in WebGL/GPU simulation path (falls back to CPU/worker)
+      useGPU: true             // opt-in WebGL/GPU simulation path (falls back to CPU/worker)
     };
 
     // Immutable snapshot of the factory-default settings for "Reset All Settings".
@@ -1491,12 +1623,46 @@
       return c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
     }
 
+// Custom two-colour gradient palette (start -> end), edited through the
+// "Custom…" option in either palette dropdown. Kept outside `params` so it
+// never pollutes the URL hash or the parameters JSON; the LUT is rebuilt
+// from here whenever the custom colours change.
+const customPalette = {
+  main: { a: [110, 142, 251], b: [242, 120, 60] }, // accent blue -> warm orange
+  seed: { a: [110, 142, 251], b: [242, 120, 60] }
+};
+
+// Resolve the active palette into a [t, r, g, b] stop list. A custom palette
+// is a simple two-stop gradient so it reuses the same linear-RGB machinery.
+function paletteStops(which) {
+  const key = which === 'seedPalette' ? params.seedPalette : params.palette;
+  if (key === 'custom') {
+    const c = which === 'seedPalette' ? customPalette.seed : customPalette.main;
+    return [[0, c.a[0], c.a[1], c.a[2]], [1, c.b[0], c.b[1], c.b[2]]];
+  }
+  return PALETTES[key] || PALETTES.grayscale;
+}
+// Stable signature used for LUT-cache keys; for custom palettes it folds in
+// the actual colours so a colour edit forces a rebuild.
+function paletteSig(which) {
+  const key = which === 'seedPalette' ? params.seedPalette : params.palette;
+  if (key !== 'custom') return key;
+  const c = which === 'seedPalette' ? customPalette.seed : customPalette.main;
+  return 'custom:' + c.a.join(',') + '>' + c.b.join(',');
+}
+function colorLutKeyStr() {
+  return paletteSig('palette') + '|' + params.invert + '|' + params.colorBias + '|' + params.vibrance;
+}
+function seedLutKeyStr() {
+  return paletteSig('seedPalette') + '|' + params.invert;
+}
+
 // mapColor(v): bias remap -> invert -> palette lookup in linear RGB,
 // converted back to sRGB. Precomputed as a 256-entry LUT rebuilt only
 // when palette/invert/bias/vibrance change. Uses expanded 7-stop palettes
 // for smoother colour transitions and more vibrant output.
 function buildColorLut() {
-  const stops = PALETTES[params.palette] || PALETTES.grayscale;
+  const stops = paletteStops('palette');
   // stops is now 7 entries [t, r, g, b] with 6 intervals between 0 and 1
   const lin = stops.map(([t, r, g, b]) =>
     [t, srgbToLinear(r / 255), srgbToLinear(g / 255), srgbToLinear(b / 255)]);
@@ -1557,13 +1723,13 @@ function buildColorLut() {
     colorLut[i * 3 + 1] = out[1];
     colorLut[i * 3 + 2] = out[2];
   }
- lutKey = params.palette + '|' + params.invert + '|' + params.colorBias + '|' + params.vibrance;
+  lutKey = colorLutKeyStr();
  }
 
     // Builds the seed-colour LUT from the chosen seed palette (linear RGB
     // interpolation, optional invert). Distinct from the V-palette LUT.
     function buildSeedColorLut() {
-      const stops = PALETTES[params.seedPalette] || PALETTES.grayscale;
+      const stops = paletteStops('seedPalette');
       const lin = stops.map(([t, r, g, b]) =>
         [t, srgbToLinear(r / 255), srgbToLinear(g / 255), srgbToLinear(b / 255)]);
       for (let i = 0; i < 256; i++) {
@@ -1579,7 +1745,7 @@ function buildColorLut() {
         seedColorLut[i * 3 + 1] = Math.round(linearToSrgb(a[2] + (b[2] - a[2]) * u) * 255);
         seedColorLut[i * 3 + 2] = Math.round(linearToSrgb(a[3] + (b[3] - a[3]) * u) * 255);
       }
-      seedLutKey = params.seedPalette + '|' + params.invert;
+      seedLutKey = seedLutKeyStr();
     }
 
     // Displayed RGB (0..255) for cell i, honouring the Colored Seeds toggle.
@@ -1616,9 +1782,9 @@ function buildColorLut() {
 
     function renderCPU() {
       if (!V || W === 0) return;
-      const key = params.palette + '|' + params.invert + '|' + params.colorBias + '|' + params.vibrance;
+      const key = colorLutKeyStr();
       if (key !== lutKey) buildColorLut();
-      const sKey = params.seedPalette + '|' + params.invert;
+      const sKey = seedLutKeyStr();
       if (params.coloredSeeds && sKey !== seedLutKey) buildSeedColorLut();
       const ctx = cpuCtx();
       if (!ctx) return;
@@ -1875,8 +2041,14 @@ function buildColorLut() {
     buildPresetButtons();
 
     $('ctl-palette').addEventListener('change', () => {
-      params.palette = $('ctl-palette').value; // LUT rebuilt on next render
-      needsRender = true;
+      const v = $('ctl-palette').value;
+      if (v === 'custom') { openCustomPalette('palette'); }
+      else { lastPalette = v; params.palette = v; needsRender = true; }
+    });
+    // Re-open the editor when "Custom…" is already selected and the user clicks
+    // the dropdown again (a plain change event wouldn't fire in that case).
+    $('ctl-palette').addEventListener('mousedown', (e) => {
+      if ($('ctl-palette').value === 'custom') { e.preventDefault(); openCustomPalette('palette'); }
     });
 
     $('ctl-invert').addEventListener('change', () => {
@@ -1977,9 +2149,119 @@ function buildColorLut() {
     }
 
     $('ctl-seedpalette').addEventListener('change', () => {
-      params.seedPalette = $('ctl-seedpalette').value;
-      if (W > 0) { if (gpu.active) gpuDisplay(); else renderCPU(); }
+      const v = $('ctl-seedpalette').value;
+      if (v === 'custom') { openCustomPalette('seedPalette'); }
+      else { lastSeedPalette = v; params.seedPalette = v; if (W > 0) { if (gpu.active) gpuDisplay(); else renderCPU(); } }
     });
+    $('ctl-seedpalette').addEventListener('mousedown', (e) => {
+      if ($('ctl-seedpalette').value === 'custom') { e.preventDefault(); openCustomPalette('seedPalette'); }
+    });
+
+    /* ---------- Custom palette editor ---------- */
+    // Editing the "Custom…" palette option opens a popup where the user builds
+    // a two-colour gradient. Each endpoint can be chosen with the native colour
+    // picker, typed as a hex code, or set via R/G/B fields. Changes apply live
+    // to the canvas; Cancel reverts both the colours and the dropdown.
+    let lastPalette = params.palette;
+    let lastSeedPalette = params.seedPalette;
+    let customTarget = null;       // 'palette' | 'seedPalette'
+    let customSnapshot = null;     // colours captured on open, for Cancel
+
+    const cpModal = document.getElementById('custom-palette-modal');
+    const cpPreview = document.getElementById('cp-preview-bar');
+    const cpTitle = document.getElementById('custom-palette-title');
+
+    function rgbToHex(r, g, b) {
+      const h = (x) => Math.max(0, Math.min(255, x | 0)).toString(16).padStart(2, '0');
+      return '#' + h(r) + h(g) + h(b);
+    }
+    function hexToRgb(hex) {
+      hex = (hex || '').trim().replace(/^#/, '');
+      if (/^[0-9a-fA-F]{3}$/.test(hex)) hex = hex.split('').map(c => c + c).join('');
+      if (!/^[0-9a-fA-F]{6}$/.test(hex)) return null;
+      return [parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16)];
+    }
+    function customColors() {
+      return customTarget === 'seedPalette' ? customPalette.seed : customPalette.main;
+    }
+    function setStopUI(end, rgb) {
+      const hex = rgbToHex(rgb[0], rgb[1], rgb[2]);
+      cpModal.querySelector('.cp-swatch[data-end="' + end + '"]').value = hex;
+      cpModal.querySelector('.cp-hex[data-end="' + end + '"]').value = hex.toUpperCase();
+      cpModal.querySelector('.cp-r[data-end="' + end + '"]').value = rgb[0];
+      cpModal.querySelector('.cp-g[data-end="' + end + '"]').value = rgb[1];
+      cpModal.querySelector('.cp-b[data-end="' + end + '"]').value = rgb[2];
+    }
+    function updatePreview() {
+      const c = customColors();
+      cpPreview.style.background = 'linear-gradient(90deg, rgb(' + c.a.join(',') + '), rgb(' + c.b.join(',') + '))';
+    }
+    function applyStop(end, rgb) {
+      rgb = [Math.max(0, Math.min(255, Math.round(rgb[0]))),
+             Math.max(0, Math.min(255, Math.round(rgb[1]))),
+             Math.max(0, Math.min(255, Math.round(rgb[2])))];
+      customColors()[end] = rgb;
+      setStopUI(end, rgb);
+      updatePreview();
+      if (gpu.active) gpuDisplay(); else renderCPU();
+    }
+    function openCustomPalette(target) {
+      customTarget = target;
+      customSnapshot = JSON.parse(JSON.stringify(customColors()));
+      // Switch to the custom palette immediately so edits preview live.
+      if (target === 'seedPalette') params.seedPalette = 'custom'; else params.palette = 'custom';
+      cpTitle.textContent = (target === 'seedPalette' ? 'Custom Seed Palette' : 'Custom Palette');
+      setStopUI('a', customColors().a);
+      setStopUI('b', customColors().b);
+      updatePreview();
+      needsRender = true;
+      cpModal.classList.add('visible');
+    }
+    function closeCustomPalette(revert) {
+      cpModal.classList.remove('visible');
+      if (revert) {
+        const c = customColors();
+        c.a = customSnapshot.a.slice();
+        c.b = customSnapshot.b.slice();
+        const sel = customTarget === 'seedPalette' ? $('ctl-seedpalette') : $('ctl-palette');
+        const prev = customTarget === 'seedPalette' ? lastSeedPalette : lastPalette;
+        sel.value = prev;
+        if (customTarget === 'seedPalette') params.seedPalette = prev; else params.palette = prev;
+        if (gpu.active) gpuDisplay(); else renderCPU();
+      } else if (customTarget === 'seedPalette') {
+        params.seedPalette = 'custom';
+      } else {
+        params.palette = 'custom';
+      }
+      needsRender = true;
+    }
+
+    cpModal.querySelectorAll('.cp-swatch').forEach(inp => {
+      inp.addEventListener('input', () => {
+        const end = inp.dataset.end;
+        const rgb = hexToRgb(inp.value);
+        if (rgb) applyStop(end, rgb);
+      });
+    });
+    cpModal.querySelectorAll('.cp-hex').forEach(inp => {
+      inp.addEventListener('input', () => {
+        const end = inp.dataset.end;
+        const rgb = hexToRgb(inp.value);
+        if (rgb) applyStop(end, rgb);
+      });
+    });
+    cpModal.querySelectorAll('.cp-r, .cp-g, .cp-b').forEach(inp => {
+      inp.addEventListener('input', () => {
+        const end = inp.dataset.end;
+        const r = +cpModal.querySelector('.cp-r[data-end="' + end + '"]').value || 0;
+        const g = +cpModal.querySelector('.cp-g[data-end="' + end + '"]').value || 0;
+        const b = +cpModal.querySelector('.cp-b[data-end="' + end + '"]').value || 0;
+        applyStop(end, [r, g, b]);
+      });
+    });
+    $('btn-custom-apply').addEventListener('click', () => closeCustomPalette(false));
+    $('btn-custom-cancel').addEventListener('click', () => closeCustomPalette(true));
+    $('btn-custom-close').addEventListener('click', () => closeCustomPalette(true));
 
     function reseed() {
       stableCount = 0; // reset convergence tracker on new seed
@@ -2580,12 +2862,12 @@ function buildColorLut() {
       const gl = gpu.gl;
       // compare against live params (module lutKey may be stale in GPU mode,
       // where the CPU blit never runs)
-      const key = params.palette + '|' + params.invert + '|' + params.colorBias + '|' + params.vibrance;
+      const key = colorLutKeyStr();
       if (key !== gpu.lutKeyGPU) {
         buildColorLut();
         gpuUploadLut();
       } else if (params.coloredSeeds) {
-        const sKey = params.seedPalette + '|' + params.invert;
+        const sKey = seedLutKeyStr();
         if (sKey !== gpu.seedLutKeyGPU) {
           buildSeedColorLut();
           gpuUploadLut();
@@ -2725,9 +3007,9 @@ function buildColorLut() {
 
     // Rebuild colour LUTs to match current params before an off-screen render.
     function ensureLuts() {
-      const key = params.palette + '|' + params.invert + '|' + params.colorBias + '|' + params.vibrance;
+      const key = colorLutKeyStr();
       if (key !== lutKey) buildColorLut();
-      const sKey = params.seedPalette + '|' + params.invert;
+      const sKey = seedLutKeyStr();
       if (params.coloredSeeds && sKey !== seedLutKey) buildSeedColorLut();
     }
 
@@ -3120,6 +3402,7 @@ function buildColorLut() {
           const i = opts.indexOf(params.palette);
           params.palette = opts[(i + 1) % opts.length];
           $('ctl-palette').value = params.palette;
+          if (params.palette === 'custom') openCustomPalette('palette');
           break;
         }
         case 'KeyF':
