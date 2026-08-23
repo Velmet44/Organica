@@ -10,7 +10,7 @@
   var frameCount = 0, stableCount = 0, stabilityPrev = null;
   var running = false;
   var params = {
-    f: 0.055, k: 0.062, Du: 0.21, Dv: 0.105, stepsPerFrame: 6,
+    f: 0.055, k: 0.062, Du: 0.21, Dv: 0.105, stepsPerFrame: 40,
     seed: '', seedMode: 'spots',
     coloredSeeds: false, seedColorRandom: false,
     seedColorDiff: 1.0, seedColorDiffusion: 0.08, seedColorOffset: 0.0,

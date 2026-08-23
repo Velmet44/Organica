@@ -1017,7 +1017,7 @@
       k: 0.062,             // kill rate
       Du: 0.21,             // diffusion rate of U
       Dv: 0.105,            // diffusion rate of V
-      stepsPerFrame: 6,     // simulation ticks per animation frame (low default: i3-friendly)
+      stepsPerFrame: 40,    // simulation ticks per animation frame (default: fast evolution)
       gridSize: 512,
       seed: '',
       seedMode: 'spots',
@@ -1670,7 +1670,7 @@ function buildColorLut() {
       ['k',             'Kill Rate',   'k',   0.045, 0.075, 0.0001, 4, 'sec-sim'],
       ['Du',            'Diffusion U', 'Du',  0.050, 0.400, 0.005, 3, 'sec-sim'],
       ['Dv',            'Diffusion V', 'Dv',  0.010, 0.250, 0.005, 3, 'sec-sim'],
-      ['stepsPerFrame', 'Steps / Frame', '',  1,     40,    1,     0, 'sec-sim'],
+      ['stepsPerFrame', 'Steps / Frame', '',  12,    40,    1,     0, 'sec-sim'],
       ['colorBias',     'Colour Bias', '',    0.0,   1.0,   0.01,  2, 'sec-visual'],
       ['vibrance',      'Vibrance',    '',    0.0,   2.0,   0.05,  2, 'sec-visual'],
       ['seedColorDiff',     'Seed Color Diff', '', 0.0,   1.0,   0.01,  2, 'sec-colored'],
