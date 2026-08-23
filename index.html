@@ -2483,8 +2483,11 @@ function buildColorLut() {
     // Convergence check for the GPU path: reads the latest V back from the
     // current ping-pong target and compares it against the previous snapshot.
     // Mirrors the CPU inline check: counts cells whose V changed by at least
-    // one LUT bin (VIS_BIN); when that's below STABLE_VIS_FRAC for stableFrames
-    // consecutive checks the GPU sim also auto-stops with a "Done" status.
+    // GPU_VIS_BIN (a perceptual LUT-bin unit); when that's below STABLE_VIS_FRAC
+    // for stableFrames consecutive checks the GPU sim auto-stops ("Done").
+    // NOTE: this does a full float readback every GPU_STAB_EVERY frames; on
+    // integrated GPUs that can stall the pipeline. If FPS drops during runs,
+    // raise GPU_STAB_EVERY (e.g. to 2) — the accuracy loss is negligible.
     function gpuCheckStability() {
       const gl = gpu.gl;
       if (!gl || !gpu.size) return;
@@ -2895,16 +2898,26 @@ function buildColorLut() {
     let simState = 'idle'; // 'idle' | 'running' | 'paused' | 'done'
     let stableCount = 0;
     let gpuLastV = null; // previous GPU V snapshot for per-frame stability diff
-    // "Still evolving" test: a cell counts only if its V shifts by at least the
-    // relevant VIS_BIN between frames — smaller shifts are sub-perceptual. The
-    // sim stops once fewer than STABLE_VIS_FRAC of cells move that much for
-    // stableFrames consecutive frames. A single non-stable frame only nudges
-    // the counter down (STABLE_DECAY) rather than zeroing it, so sporadic tail
-    // jitter can't keep the sim running for hundreds of frames.
-    // Tuned per backend: GPU float is perceptually "done" at ~1.8 bins; the CPU
-    // float tail keeps a slightly larger residual motion, so it needs ~2.5.
-    const VIS_BIN = 2.5 / 255;       // CPU / inline path
-    const GPU_VIS_BIN = 1.8 / 255;   // GPU float path (measured as accurate)
+    let gpuStabCounter = 0; // counts displayed frames to throttle the GPU readback
+    // How often (in displayed frames) to run the GPU stability readback. 1 = every
+    // frame (most accurate). On integrated GPUs the per-frame float readback can
+    // stall the pipeline and drop FPS; raise to 2 for a negligible accuracy loss.
+    const GPU_STAB_EVERY = 1;
+    // "Still evolving" test (convergence / auto-stop). All thresholds are
+    // PERCEPTUAL tunables, not physical: a "bin" is 1/255 of the V range, i.e.
+    // one step in the 256-entry colour LUT — a V shift smaller than that cannot
+    // change the rendered pixel. These values were tuned empirically by eye
+    // (see git history) and are safe to nudge if a backend stops too early/late.
+    // A cell counts as "still evolving" only if its V shifts by >= the relevant
+    // VIS_BIN between consecutive frames; the sim stops once fewer than
+    // STABLE_VIS_FRAC of cells move that much for stableFrames consecutive
+    // frames. A single non-stable frame only nudges the counter down
+    // (STABLE_DECAY) instead of zeroing it, so sporadic tail jitter can't keep
+    // the sim running for hundreds of frames.
+    // Per backend: GPU float is perceptually "done" at ~1.8 bins; the CPU float
+    // tail keeps a slightly larger residual motion, so it needs ~2.5.
+    const VIS_BIN = 2.5 / 255;       // CPU / inline path (empirical, perceptual)
+    const GPU_VIS_BIN = 1.8 / 255;   // GPU float path (empirical, perceptual)
     const STABLE_VIS_FRAC = 0.0003;
     const stableFrames = 15;
     const STABLE_DECAY = 2;
@@ -3175,8 +3188,9 @@ function buildColorLut() {
           gpuStep(params.stepsPerFrame);
           frameCount++; // count displayed frames (consistent with CPU/worker paths)
           fpsFrames++;
-          gpuCheckStability(); // every displayed frame, so the comparison window
-                               // matches the CPU path (consecutive frames), not 4
+          if (++gpuStabCounter % GPU_STAB_EVERY === 0) gpuCheckStability(); // throttle via GPU_STAB_EVERY
+                               // (default 1 = every frame) so the comparison window
+                               // matches the CPU path (consecutive frames).
         } else if (running && !sim.useWorker) {
           for (let s = 0; s < params.stepsPerFrame; s++) tick(params);
           frameCount++;
