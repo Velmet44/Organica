@@ -11,11 +11,17 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #0a0a0f;
-      --panel-bg: #111118;
-      --border: #2a2a3a;
-      --text: #c8c8d8;
+      --bg: #0b0c10;
+      --panel-bg: #12141c;
+      --border: #232634;
+      --border-strong: #2e3242;
+      --text: #c2c6d2;
+      --text-dim: #828aa0;
       --accent: #6e8efb;
+      --accent-dim: rgba(110, 142, 251, 0.14);
+      --radius: 8px;
+      --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -24,28 +30,71 @@
       height: 100%;
       background: var(--bg);
       color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-family: var(--sans);
       overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
     }
 
     #topbar {
-      height: 44px;
+      height: 48px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 0 16px;
+      padding: 0 18px;
       border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, #0d0e13, var(--bg));
     }
 
-    #topbar h1 {
-      font-size: 15px;
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      user-select: none;
+    }
+    .brand-mark {
+      width: 22px;
+      height: 22px;
+      display: block;
+      color: var(--accent);
+    }
+    .brand-text { display: flex; flex-direction: column; line-height: 1.15; }
+    .brand-name {
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+      color: #eef0f6;
+    }
+    .brand-sub {
+      font-size: 10.5px;
+      font-weight: 400;
+      letter-spacing: 0.4px;
+      color: var(--text-dim);
+    }
+
+    #topbar-actions { display: flex; gap: 8px; }
+
+    .btn-ghost {
+      background: transparent;
+      border: 1px solid var(--border-strong);
+      color: var(--text-dim);
+      font-family: var(--sans);
+      font-size: 12px;
       font-weight: 500;
-      letter-spacing: 0.5px;
+      padding: 6px 12px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .btn-ghost:hover {
+      color: var(--text);
+      border-color: var(--accent);
+      background: var(--accent-dim);
     }
 
     #main {
       display: flex;
-      height: calc(100vh - 44px);
+      height: calc(100vh - 48px - 34px);
     }
 
     /* Canvas area */
@@ -64,8 +113,8 @@
       box-shadow: 0 0 30px rgba(110, 142, 251, 0.15);
       image-rendering: pixelated;
       /* square canvas sized to fit the area left of the 300px panel */
-      width: min(calc(100vh - 76px), calc(100vw - 332px));
-      height: min(calc(100vh - 76px), calc(100vw - 332px));
+      width: min(calc(100vh - 118px), calc(100vw - 332px));
+      height: min(calc(100vh - 118px), calc(100vw - 332px));
     }
 
     /* Control panel */
@@ -79,19 +128,19 @@
     }
 
     .panel-section {
-      padding-bottom: 14px;
-      margin-bottom: 14px;
+      padding-bottom: 16px;
+      margin-bottom: 16px;
       border-bottom: 1px solid var(--border);
     }
     .panel-section:last-child { border-bottom: none; margin-bottom: 0; }
 
     .panel-section h2 {
-      font-size: 11px;
+      font-size: 10.5px;
       font-weight: 600;
       text-transform: uppercase;
-      letter-spacing: 1.2px;
-      color: #8888a0;
-      margin-bottom: 10px;
+      letter-spacing: 1.4px;
+      color: var(--text-dim);
+      margin-bottom: 12px;
     }
 
     .param-row { margin-bottom: 12px; }
@@ -104,19 +153,20 @@
     }
 
     .param-row label {
-      font-size: 13px;
+      font-size: 12.5px;
       color: var(--text);
+      font-weight: 500;
     }
 
     .param-row .sym {
-      color: #8888a0;
-      font-family: 'JetBrains Mono', monospace;
+      color: var(--text-dim);
+      font-family: var(--mono);
       font-size: 11px;
       margin-left: 4px;
     }
 
     .param-row .val {
-      font-family: 'JetBrains Mono', monospace;
+      font-family: var(--mono);
       font-size: 12px;
       color: var(--accent);
       font-weight: 500;
@@ -161,17 +211,20 @@
 
     select, input[type="text"] {
       width: 100%;
-      background: #191924;
+      background: #0e1016;
       border: 1px solid var(--border);
       border-radius: 6px;
       color: var(--text);
-      padding: 6px 8px;
-      font-family: 'JetBrains Mono', monospace;
+      padding: 7px 9px;
+      font-family: var(--mono);
       font-size: 12px;
       outline: none;
-      transition: border-color 0.2s;
+      transition: border-color 0.15s, background 0.15s;
     }
-    select:focus, input[type="text"]:focus { border-color: var(--accent); }
+    select:focus, input[type="text"]:focus {
+      border-color: var(--accent);
+      background: #11141d;
+    }
 
     input[type="checkbox"] {
       accent-color: var(--accent);
@@ -191,35 +244,44 @@
       display: inline-block;
       width: 100%;
       background: transparent;
-      border: 1px solid var(--accent);
-      border-radius: 999px;
-      color: var(--accent);
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 12px;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 12.5px;
       font-weight: 500;
       padding: 8px 12px;
       cursor: pointer;
       text-align: center;
-      transition: background 0.2s, color 0.2s;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
     }
-    .btn:hover { background: rgba(110, 142, 251, 0.15); }
+    .btn:hover {
+      background: #1a1d28;
+      border-color: var(--accent);
+      color: #eef0f6;
+    }
 
     .btn-filled {
       background: var(--accent);
-      color: #0a0a0f;
+      border-color: var(--accent);
+      color: #0b0c10;
     }
-    .btn-filled:hover { background: #8aa4fc; }
+    .btn-filled:hover {
+      background: #8aa4fc;
+      border-color: #8aa4fc;
+      color: #0b0c10;
+    }
 
     .seed-row {
       display: flex;
-      gap: 6px;
+      gap: 8px;
       align-items: center;
     }
-    .seed-row input { flex: 1; }
+    .seed-row input { flex: 1; min-width: 0; }
     .seed-row .btn {
       width: auto;
       flex-shrink: 0;
-      padding: 6px 10px;
+      padding: 7px 12px;
     }
 
     /* Canvas overlays */
@@ -452,31 +514,32 @@
 
     /* Keyboard shortcut legend */
     .shortcuts {
-      padding: 10px 14px 16px;
+      padding: 14px 0 4px;
       font-size: 11px;
-      color: #8888a0;
+      color: var(--text-dim);
       border-top: 1px solid var(--border);
     }
     .shortcuts h2 {
-      font-size: 11px;
+      font-size: 10.5px;
       font-weight: 600;
       text-transform: uppercase;
-      letter-spacing: 0.08em;
-      margin-bottom: 8px;
+      letter-spacing: 1.2px;
+      margin-bottom: 9px;
+      color: var(--text-dim);
     }
-    .shortcuts div { margin-bottom: 4px; }
+    .shortcuts div { margin-bottom: 5px; }
     kbd {
       display: inline-block;
       min-width: 14px;
       text-align: center;
-      background: #2a2a3a;
-      border: 1px solid #3d3d52;
+      background: #1c1f2b;
+      border: 1px solid var(--border-strong);
       border-bottom-width: 2px;
       border-radius: 4px;
       padding: 1px 5px;
-      font-family: 'JetBrains Mono', monospace;
+      font-family: var(--mono);
       font-size: 10px;
-      color: #e0e0f0;
+      color: #d7dae6;
     }
 
     /* Transport buttons (Start / Step) */
@@ -497,8 +560,17 @@
     }
     .status-row label { color: #8888a0; }
     .sim-status {
-      font-family: 'JetBrains Mono', monospace;
+      font-family: var(--mono);
       font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .sim-status::before {
+      content: "";
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: currentColor;
     }
     .sim-idle   { color: #8888a0; }
     .sim-running{ color: #5ee08a; }
@@ -561,34 +633,93 @@
     }
     .about-close:hover { color: #ffffff; }
 
+    .about-meta {
+      margin-bottom: 0 !important;
+      color: var(--text-dim);
+      font-size: 11px;
+      font-family: var(--mono);
+      letter-spacing: 0.2px;
+    }
+
+    .section-note {
+      margin-top: 10px;
+      font-size: 11px;
+      line-height: 1.5;
+      color: var(--text-dim);
+    }
+
     /* Fullscreen mode: hide panel, canvas fills viewport */
     body.fullscreen #panel,
     body.fullscreen #topbar { display: none; }
+    /* Footer: open-source notice + repository link */
+    #footer {
+      height: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 0 18px;
+      border-top: 1px solid var(--border);
+      background: var(--panel-bg);
+      font-size: 11.5px;
+      color: var(--text-dim);
+    }
+    #footer .footer-left { display: flex; align-items: center; gap: 7px; }
+    #footer .dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: #4ec97a;
+      box-shadow: 0 0 6px rgba(78, 201, 122, 0.6);
+    }
+    #footer a {
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 500;
+      transition: color 0.15s;
+    }
+    #footer a:hover { color: #9db4ff; text-decoration: underline; }
+
     /* Responsive: stack panel below the canvas on narrow screens */
     @media (max-width: 768px) {
       #main { flex-direction: column; height: auto; }
       #canvas-area { padding: 8px; }
       #sim {
-        width: min(100vw - 20px, calc(100vh - 76px));
-        height: min(100vw - 20px, calc(100vh - 76px));
+        width: min(100vw - 20px, calc(100vh - 118px));
+        height: min(100vw - 20px, calc(100vh - 118px));
       }
       #panel {
         width: auto;
         border-left: none;
         border-top: 1px solid var(--border);
       }
+      #footer { font-size: 10.5px; padding: 0 12px; }
     }
 
-    body.fullscreen #main { grid-template-columns: 1fr; }
+    body.fullscreen #main { grid-template-columns: 1fr; height: 100vh; }
     body.fullscreen #canvas-area { border-radius: 0; }
+    body.fullscreen #topbar,
+    body.fullscreen #footer { display: none; }
+    body.fullscreen #sim {
+      width: min(100vw - 32px, 100vh - 32px);
+      height: min(100vw - 32px, 100vh - 32px);
+    }
   </style>
 </head>
 <body>
   <header id="topbar">
-    <h1>🧬 Reaction-Diffusion Engine</h1>
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.4" opacity="0.35"/>
+        <circle cx="12" cy="12" r="6.5" stroke="currentColor" stroke-width="1.4" opacity="0.6"/>
+        <circle cx="12" cy="12" r="3" fill="currentColor"/>
+      </svg>
+      <div class="brand-text">
+        <span class="brand-name">Organica</span>
+        <span class="brand-sub">Reaction-Diffusion Engine</span>
+      </div>
+    </div>
     <div id="topbar-actions">
-      <button class="btn-icon" id="btn-fullscreen" title="Toggle fullscreen (hide panel)">⛶</button>
-      <button class="btn-icon" id="btn-about" title="About">?</button>
+      <button class="btn-ghost" id="btn-fullscreen" title="Toggle fullscreen (hide panel)">Fullscreen</button>
+      <button class="btn-ghost" id="btn-about" title="About Organica">About</button>
     </div>
   </header>
 
@@ -609,8 +740,8 @@
       <section class="panel-section" id="sec-sim">
         <h2>Simulation</h2>
         <div class="transport-row">
-          <button class="btn" id="btn-play">▶ Start</button>
-          <button class="btn" id="btn-step" title="Advance exactly one iteration">▶ Step</button>
+          <button class="btn" id="btn-play">Start</button>
+          <button class="btn" id="btn-step" title="Advance exactly one iteration">Step</button>
         </div>
         <div class="status-row">
           <label>Status</label><span id="sim-status" class="sim-status sim-idle">Idle</span>
@@ -693,7 +824,7 @@
           <div class="param-head"><label for="ctl-seed">Seed Value</label></div>
           <div class="seed-row">
             <input type="text" id="ctl-seed" spellcheck="false" autocomplete="off">
-            <button class="btn" id="btn-dice" title="Randomise seed">🎲</button>
+            <button class="btn" id="btn-dice" title="Randomise seed">Randomize</button>
           </div>
         </div>
         <div class="param-row">
@@ -707,6 +838,8 @@
         </div>
         <button class="btn btn-filled" id="btn-reset">Reset / Reseed</button>
         <button class="btn" id="btn-resetall">Reset All Settings</button>
+
+        <p class="section-note">Reseed rebuilds the grid from the current seed. Reset All restores every parameter to its default.</p>
       </section>
 
       <section class="panel-section" id="sec-export">
@@ -715,7 +848,7 @@
           <div class="param-head"><label for="ctl-exname">Filename</label></div>
           <input type="text" id="ctl-exname" spellcheck="false" autocomplete="off" placeholder="organica_<seed>_f<f>_k<k>">
         </div>
-        <button class="btn" id="btn-export" style="margin-bottom:8px">📷 Export PNG</button>
+        <button class="btn" id="btn-export" style="margin-bottom:8px">Export PNG</button>
         <div class="param-row">
           <div class="param-head"><label for="ctl-exsize">Export Size</label></div>
           <select id="ctl-exsize">
@@ -725,8 +858,8 @@
             <option value="4096">4096 × 4096</option>
           </select>
         </div>
-        <button class="btn" id="btn-hires" style="margin-bottom:8px">High-Res Render…</button>
-        <button class="btn" id="btn-video" style="margin-bottom:8px">Export Video…</button>
+        <button class="btn" id="btn-hires" style="margin-bottom:8px">High-Res Render</button>
+        <button class="btn" id="btn-video" style="margin-bottom:8px">Export Video</button>
         <button class="btn" id="btn-json">Copy Parameters JSON</button>
         <button class="btn" id="btn-import">Import Parameters JSON</button>
       </section>
@@ -743,20 +876,24 @@
     </aside>
   </div>
 
+  <footer id="footer">
+    <span class="footer-left"><span class="dot"></span>Organica is free, open-source software released under the MIT License</span>
+    <a id="footer-github" href="#" target="_blank" rel="noopener noreferrer">View source on GitHub</a>
+  </footer>
+
   <!-- About modal -->
   <div id="about-modal">
     <div class="about-box">
       <button class="about-close" id="btn-about-close">✕</button>
-      <h3>🧬 Reaction-Diffusion Engine</h3>
-      <p>A Gray-Scott reaction-diffusion simulator running entirely in your
-         browser. Two virtual chemicals react and diffuse, painting everything
-         from coral gardens to mitotic cells — all from one equation.</p>
-      <p>Every run is reproducible: type any text into the Seed field and the
-         same pattern will always grow from it. Tune feed &amp; kill rates live,
-         or start from a preset.</p>
-      <p style="color:#8888a0; font-size:11px; margin-bottom:0">
-        Single-file HTML + vanilla JS · GPU-accelerated via WebGL with CPU
-        fallback · Hack Club Greeble</p>
+      <h3>About Organica</h3>
+      <p>Organica is a Gray-Scott reaction-diffusion simulator that runs entirely
+         in your browser. Two virtual chemicals react and diffuse on a grid,
+         producing the spots, stripes, and coral-like structures seen in natural
+         pattern formation — all from a single equation.</p>
+      <p>Every run is reproducible: the seed text is hashed into the starting
+         grid, so the same input always yields the same pattern. Tune the feed
+         and kill rates live, or start from a preset.</p>
+      <p class="about-meta">Single-file HTML · Vanilla JavaScript · WebGL with CPU fallback</p>
     </div>
   </div>
 
@@ -837,6 +974,9 @@
 
   <script>
     'use strict';
+
+    // Repository URL shown in the footer. Change this to your project's repo.
+    const GITHUB_URL = 'https://github.com/Velmet44/Organica';
 
     /* ============================================================
        Organica — Gray-Scott reaction-diffusion engine
@@ -2930,9 +3070,9 @@ function buildColorLut() {
       const labels = { idle: 'Idle', running: 'Running', paused: 'Paused', done: 'Done' };
       simStatusEl.textContent = labels[state] || state;
       simStatusEl.className = 'sim-status sim-' + state;
-      if (state === 'running') { btnPlay.textContent = '⏸ Pause'; btnStep.disabled = true; }
-      else if (state === 'paused') { btnPlay.textContent = '▶ Resume'; btnStep.disabled = false; }
-      else { btnPlay.textContent = '▶ Start'; btnStep.disabled = false; } // idle, done
+      if (state === 'running') { btnPlay.textContent = 'Pause'; btnStep.disabled = true; }
+      else if (state === 'paused') { btnPlay.textContent = 'Resume'; btnStep.disabled = false; }
+      else { btnPlay.textContent = 'Start'; btnStep.disabled = false; } // idle, done
     }
 
     function togglePlay() {
@@ -3213,6 +3353,8 @@ function buildColorLut() {
       params.seed = randomSeedString();
     }
     syncUIFromParams();
+    const footerLink = document.getElementById('footer-github');
+    if (footerLink) footerLink.href = GITHUB_URL;
     enableWorker(); // uses Web Worker for the sim when available, else inline
     // Optional opt-in GPU path. If requested but unavailable, revert the flag,
     // uncheck the box, and notify — the worker/CPU core keeps running.

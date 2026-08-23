@@ -96,16 +96,16 @@ Each preset also sets a matching seed pattern and colour palette; clicking one r
 
 ## Transport
 
-- **▶ Start / ⏸ Pause** — freezes the simulation but keeps rendering, so palette and bias edits stay visible while paused.
-- **▶ Step** (enabled while paused) — advances exactly one iteration.
+- **Start / Pause** — freezes the simulation but keeps rendering, so palette and bias edits stay visible while paused.
+- **Step** (enabled while paused) — advances exactly one iteration.
 - **Reset / Reseed** — reinitialises the grid from the current seed and settings. The engine auto-stops with a **Done** status once the pattern has converged: a frame counts as "still changing" only if at least one LUT colour bin's worth of V shifts in a cell, so it stops within ~15 frames of the image looking visually static (no more long tails of sub-perceptible drift).
 - **Reset All Settings** — restores every parameter (including backend choice) to its factory default and reseeds.
-- **⛶ Fullscreen** — hides the control panel and fills the viewport; click again or press `Esc` to exit.
+- **Fullscreen** — hides the control panel and fills the viewport; click again or press `Esc` to exit.
 - **ⓘ info icons** — every parameter shows a small `ⓘ` next to its label; hover it for a plain-language explanation of what that parameter does.
 
 ## Export
 
-- **📷 Export PNG** — saves exactly what the canvas shows right now, named `organica_<seed>_f<f>_k<k>.png` (or your custom filename).
+- **Export PNG** — saves exactly what the canvas shows right now, named `organica_<seed>_f<f>_k<k>.png` (or your custom filename).
 - **High-Res Render…** — re-runs the *exact finished simulation* off-screen at up to 4096×4096 using the CPU path (re-simulation is deterministic, not upscaling), for the same number of ticks the live run took, then saves the final frame as a PNG. A progress modal and Cancel button are shown, and the live session is suspended and fully restored afterwards.
 - **Export Video…** — records a 60 fps WebM of the finished formation by replaying the simulation on the CPU and capturing each displayed frame. A dialog lets you choose resolution (256–1024), filename, and speed (0.5×–4×). Output is a `.webm` video.
 - **Export gating** — both High-Res Render and Export Video require the simulation to have finished (status **Done**). Clicking either before completion shows a notice instead of exporting.
